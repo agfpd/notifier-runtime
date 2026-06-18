@@ -21,6 +21,8 @@ function writeDocsFixture(): void {
   writeFileSync(join(docsSrc, '03-timer.md'), 'timer')
   writeFileSync(join(docsSrc, 'ru', '03-timer.md'), 'таймер')
   writeFileSync(join(docsSrc, 'internals', 'secret.md'), 'internal-only')
+  writeFileSync(join(docsSrc, '.DS_Store'), 'macos-turd') // must NOT leak into host docs
+  writeFileSync(join(docsSrc, 'ru', '.DS_Store'), 'macos-turd') // nested too
 }
 
 beforeEach(() => {
@@ -38,6 +40,8 @@ describe('scaffoldHostDocs', () => {
     expect(readFileSync(join(r.dest, 'README.md'), 'utf8')).toBe('# contract')
     expect(existsSync(join(r.dest, 'ru', '03-timer.md'))).toBe(true)
     expect(existsSync(join(r.dest, 'internals'))).toBe(false) // internals subtree skipped
+    expect(existsSync(join(r.dest, '.DS_Store'))).toBe(false) // macOS cruft excluded (root)
+    expect(existsSync(join(r.dest, 'ru', '.DS_Store'))).toBe(false) // and nested
     expect(existsSync(`${r.dest}.tmp-${process.pid}`)).toBe(false) // no temp leftover
   })
 

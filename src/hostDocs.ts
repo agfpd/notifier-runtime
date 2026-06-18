@@ -16,7 +16,7 @@
 
 import { cpSync, existsSync, mkdirSync, renameSync, rmSync } from 'fs'
 import { homedir } from 'os'
-import { join, relative, sep } from 'path'
+import { basename, join, relative, sep } from 'path'
 import { resolveIapeerRoot } from './manifest.ts'
 
 export interface ScaffoldDocsResult {
@@ -56,9 +56,12 @@ export function scaffoldHostDocs(
     mkdirSync(join(dest, '..'), { recursive: true })
     cpSync(docsSource, tmp, {
       recursive: true,
-      // Skip the internals/ subtree (matches package.json files exclusion).
-      // Returning false for a directory skips its whole subtree.
+      // Skip the internals/ subtree (matches package.json files exclusion;
+      // returning false for a directory skips its whole subtree) and macOS
+      // .DS_Store cruft (macOS-targeted host, so every dev/host tree carries it —
+      // else it leaks into ~/.iapeer/docs/notifier-runtime/).
       filter: src => {
+        if (basename(src) === '.DS_Store') return false
         const rel = relative(docsSource, src)
         return rel !== 'internals' && !rel.startsWith(`internals${sep}`)
       },
