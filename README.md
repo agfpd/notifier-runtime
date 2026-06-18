@@ -2,8 +2,9 @@
 
 **Scheduled messages and event signals for a team of AI agents — the time component of [iapeer](https://github.com/agfpd/iapeer).**
 
+[![CI](https://github.com/agfpd/notifier-runtime/actions/workflows/ci.yml/badge.svg)](https://github.com/agfpd/notifier-runtime/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@agfpd/notifier-runtime)](https://www.npmjs.com/package/@agfpd/notifier-runtime)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![license](https://img.shields.io/npm/l/@agfpd/notifier-runtime)](./LICENSE)
 [![platform](https://img.shields.io/badge/platform-macOS-lightgrey)](#quick-start)
 
 notifier-runtime is what fires in an [iapeer](https://github.com/agfpd/iapeer) team when nobody asked — a daily message at 9:00, a heartbeat every 30 minutes, an alert the moment a log line matches. It carries two peers: `timer` sends a message on a schedule, `watcher` turns a long-lived script's output into signals. A peer registers a trigger with one IAP message; the runtime fires it, retries delivery, and escalates a signal it can't deliver rather than dropping it.
