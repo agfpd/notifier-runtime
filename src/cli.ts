@@ -234,7 +234,20 @@ async function selfInstallCommand(): Promise<void> {
   process.stdout.write(`  bin:      ${r.binPath}  (${r.binMode})\n`)
   process.stdout.write(`  manifest: ${r.manifestPath}\n`)
   process.stdout.write(`  root:     ${r.root}\n`)
-  log('self-install', { bin: r.binPath, manifest: r.manifestPath, binMode: r.binMode, root: r.root })
+  // FU6 on-host docs: best-effort, so surface BOTH outcomes (copied / skipped)
+  // without ever having failed the install.
+  process.stdout.write(
+    r.docs.copied ? `  docs:     ${r.docs.dest}\n` : `  docs:     skipped (${r.docs.reason})\n`,
+  )
+  log('self-install', {
+    bin: r.binPath,
+    manifest: r.manifestPath,
+    binMode: r.binMode,
+    root: r.root,
+    docsCopied: r.docs.copied,
+    docsDest: r.docs.dest,
+    ...(r.docs.reason ? { docsReason: r.docs.reason } : {}),
+  })
 }
 
 // `notifier-runtime self-config`: the PER-PEER self-config hook the foundation invokes

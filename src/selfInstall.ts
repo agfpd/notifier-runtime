@@ -20,12 +20,19 @@ import { spawnSync } from 'child_process'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import pkg from '../package.json'
 import { RUNTIME } from './constants.ts'
+import { scaffoldHostDocs, type ScaffoldDocsResult } from './hostDocs.ts'
 import { buildManifest, resolveIapeerRoot, runtimeManifestPath, writeManifestAtomic } from './manifest.ts'
 
 /** The launcher binary name — `<runtime>-runtime`, matching the foundation's
  *  INFRA_RUNTIME_DEFAULT_BIN.notifier and the notifier adapter's buildArgv fallback. */
 export const BIN_NAME = `${RUNTIME}-runtime`
+
+/** The on-host docs dir name = the UNSCOPED npm package name (`notifier-runtime`),
+ *  so docs land at <IAPEER_ROOT>/docs/notifier-runtime/ — the FU6 convention path
+ *  the foundation injects into the system prompt. */
+export const DOCS_PKG = pkg.name.split('/').pop() ?? BIN_NAME
 
 export interface SelfInstallOptions {
   env?: NodeJS.ProcessEnv
@@ -46,6 +53,8 @@ export interface SelfInstallResult {
   binMode: SelfInstallBinMode
   root: string
   binDir: string
+  /** FU6 on-host docs scaffolding outcome (best-effort; never blocks install). */
+  docs: ScaffoldDocsResult
 }
 
 /** Resolve the bin dir: IAPEER_BIN_DIR override → else ~/.local/bin. */
@@ -116,7 +125,15 @@ export function selfInstall(opts: SelfInstallOptions = {}): SelfInstallResult {
   const manifest = buildManifest(binPath)
   const manifestPath = writeManifestAtomic(manifest, env)
 
-  return { binPath, manifestPath, binMode, root: resolveIapeerRoot(env), binDir }
+  // FU6: stage this package's docs to <root>/docs/notifier-runtime/ (best-effort,
+  // never blocks install). docsSource is the package's docs/ dir resolved from the
+  // source entry (<pkgroot>/src/cli.ts → <pkgroot>/docs). When running from a
+  // compiled bin (copied-self path) there is no source tree, so the source is
+  // absent and scaffoldHostDocs soft-skips — docs are staged on the npx/source
+  // install where the version-matched docs/ actually exists.
+  const docs = scaffoldHostDocs(DOCS_PKG, join(sourceEntry, '..', '..', 'docs'), env)
+
+  return { binPath, manifestPath, binMode, root: resolveIapeerRoot(env), binDir, docs }
 }
 
 /** Is `execPath` a bun interpreter (so `<execPath> build` works)? When running

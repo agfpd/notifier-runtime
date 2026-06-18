@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'child_process'
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { BIN_NAME, resolveBinDir, selfInstall } from '../src/selfInstall.ts'
@@ -51,6 +51,13 @@ describe('selfInstall (real compile)', () => {
         expect(manifest.selfConfig).toEqual({ command: r.binPath, args: ['self-config'] })
         expect(manifest.peers.map((p: { personality: string }) => p.personality)).toEqual(['timer', 'watcher'])
         for (const p of manifest.peers) expect(p.intelligence).toBe('absent')
+
+        // FU6: docs staged to <root>/docs/notifier-runtime/ during install (the
+        // sandbox runs from the repo source, so docs/ exists → copied).
+        expect(r.docs.copied).toBe(true)
+        expect(r.docs.dest).toBe(join(root, 'docs', 'notifier-runtime'))
+        expect(statSync(join(r.docs.dest, 'README.md')).isFile()).toBe(true)
+        expect(existsSync(join(r.docs.dest, 'ru'))).toBe(true)
 
         // the compiled bin actually runs (self-contained snapshot)
         const help = spawnSync(r.binPath, ['--help'], { encoding: 'utf8' })
