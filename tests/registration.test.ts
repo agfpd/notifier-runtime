@@ -422,6 +422,97 @@ describe('PeerProfileStore — explicit id round-trips through projection', () =
   })
 })
 
+describe('PeerProfileStore.isEphemeral', () => {
+  const profilePath = '/peers/p/.iapeer/peer-profile.json'
+  const withProfile = (body?: string) =>
+    makeFs(body === undefined ? {} : { [profilePath]: body }).store
+
+  test('wake_policy "ephemeral" → true', () => {
+    expect(withProfile(JSON.stringify({ personality: 'p', wake_policy: 'ephemeral' })).isEphemeral('/peers/p')).toBe(true)
+  })
+  test('wake_policy absent → false (ordinary durable peer)', () => {
+    expect(withProfile(JSON.stringify({ personality: 'p' })).isEphemeral('/peers/p')).toBe(false)
+  })
+  test('wake_policy some other value → false (only "ephemeral" suppresses)', () => {
+    expect(withProfile(JSON.stringify({ personality: 'p', wake_policy: 'durable' })).isEphemeral('/peers/p')).toBe(false)
+  })
+  test('no profile file at all → false', () => {
+    expect(withProfile(undefined).isEphemeral('/peers/p')).toBe(false)
+  })
+})
+
+// ADR-006: a delivered envelope SPAWNS an ephemeral (FaaS) peer a fresh worker
+// session. So the notifier must NOT deliver a registration reply to an ephemeral
+// requester — the ack is gratuitous (it verifies success by READING STATE) and a
+// delivered reply would spawn a spurious session. Registration STILL writes state
+// and reloads the engine; only the wire delivery of the reply is suppressed.
+describe('handleEnvelope — ephemeral requester reply-suppression', () => {
+  const EPH_REGISTRY = JSON.stringify({
+    peers: [
+      { personality: 'index', cwd: '/peers/index' },
+      { personality: 'boris', cwd: '/peers/boris' },
+    ],
+  })
+  const ephFs = () =>
+    makeFs({
+      '/reg/index.json': EPH_REGISTRY,
+      '/peers/index/.iapeer/peer-profile.json': JSON.stringify({ personality: 'index', wake_policy: 'ephemeral' }),
+    })
+
+  test('register from ephemeral: state written + reloaded, but NO reply delivered (no spawn)', () => {
+    const { files, store, writes } = ephFs()
+    const transport = new FakeTransport()
+    let reloads = 0
+    const res = handleEnvelope(
+      env({ fromPersonality: 'index', message: JSON.stringify({ id: 'beat', when: '@every 30m', message: 'm', target: 'self' }) }),
+      'timer',
+      { store, transport, reloadCb: () => reloads++ },
+    )
+    expect(res.outcome).toBe('registered') // registration still succeeds
+    expect(res.reloaded).toBe(true) // live engine still reloaded
+    expect(reloads).toBe(1)
+    // durable trigger written into the ephemeral peer's own profile
+    expect(writes).toEqual(['/peers/index/.iapeer/peer-profile.json'])
+    expect(profileOf(files, '/peers/index').notifier.triggers[0].id).toBe('beat')
+    // the spurious ack is NOT delivered → no spawn
+    expect(transport.sent).toEqual([])
+  })
+
+  test('malformed body from ephemeral: rejected, no write, error reply also suppressed', () => {
+    const { store, writes } = ephFs()
+    const transport = new FakeTransport()
+    const res = handleEnvelope(env({ fromPersonality: 'index', message: '{not json' }), 'timer', { store, transport })
+    expect(res.outcome).toBe('rejected')
+    expect(writes).toEqual([])
+    // error reply suppressed too: no deliverable reply on ANY register input → no spawn
+    expect(transport.sent).toEqual([])
+    // the text still flows back in the result for logging/tests
+    expect(res.reply).toContain('not valid JSON')
+  })
+
+  test('list/help from ephemeral are suppressed as well (any reply spawns it)', () => {
+    const { store } = ephFs()
+    const transport = new FakeTransport()
+    const list = handleEnvelope(env({ fromPersonality: 'index', message: JSON.stringify({ cmd: 'list' }) }), 'timer', { store, transport })
+    const help = handleEnvelope(env({ fromPersonality: 'index', message: 'help' }), 'timer', { store, transport })
+    expect(list.outcome).toBe('listed')
+    expect(help.outcome).toBe('helped')
+    expect(transport.sent).toEqual([])
+  })
+
+  test('a DURABLE requester is unaffected — reply still delivered as before', () => {
+    const { store } = ephFs()
+    const transport = new FakeTransport()
+    handleEnvelope(
+      env({ fromPersonality: 'boris', message: JSON.stringify({ id: 'b', when: '@every 5m', message: 'm', target: 'self' }) }),
+      'timer',
+      { store, transport },
+    )
+    expect(transport.sent.length).toBe(1) // boris (no wake_policy) keeps interactive feedback
+    expect(transport.sent[0]!.message).toContain('registered')
+  })
+})
+
 describe('handleEnvelope — fallback field (escalation chain)', () => {
   test('register stores the resolved fallback ("self" → requester) and the reply shows it', () => {
     const { files, store } = makeFs({ '/reg/index.json': REGISTRY })

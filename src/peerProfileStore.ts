@@ -123,6 +123,19 @@ export class PeerProfileStore {
     return this.findCwd(personality) !== null
   }
 
+  // True iff the peer at `cwd` is an EPHEMERAL (FaaS) peer — `wake_policy:
+  // "ephemeral"` in its peer-profile. Per ADR-006 ANY delivered envelope spawns
+  // such a peer a fresh worker session, so registration.ts SUPPRESSES delivery
+  // of registration replies to it: an ephemeral registrant verifies success by
+  // READING STATE (its durable trigger), never by the reply, and a delivered ack
+  // would spawn a spurious session. Missing profile / field / non-string → false
+  // (an ordinary durable peer). A malformed profile JSON throws, same as every
+  // other profile read here (callers that must not throw guard it).
+  isEphemeral(cwd: string): boolean {
+    const { profile } = this.readProfile(cwd)
+    return profile.wake_policy === 'ephemeral'
+  }
+
   // Read the current notifier.triggers[] for the peer at `cwd`. A missing
   // profile / missing notifier block → empty array. A malformed profile throws.
   list(cwd: string): StoredTrigger[] {

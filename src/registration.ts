@@ -116,11 +116,36 @@ function toStoredTrigger(cmd: RegisterCommand, owner: string, resolvedTarget: st
 // no kind marker), so this is the notifier-side correlation handle — match
 // `reply-sent`/`sent`/`forwarded` len+ts against a delivery line to tell which
 // is which.
-function reply(deps: RegistrationDeps, to: string, message: string, topic?: string): void {
+//
+// `ephemeral`: the requester is a FaaS peer that ANY delivered envelope spawns a
+// fresh worker session (ADR-006). A registration reply to such a peer is
+// gratuitous (it verifies success by READING STATE, not the reply) and a
+// delivered reply would spawn a spurious session — so we DO NOT deliver it. The
+// reply text still flows back in HandleResult (logging/tests); only the wire
+// delivery is suppressed. A trace line keeps "no ack" explainable in the log.
+function reply(deps: RegistrationDeps, to: string, message: string, topic: string | undefined, ephemeral: boolean): void {
   const log = deps.log ?? noopLog
+  if (ephemeral) {
+    log('reply-suppressed-ephemeral', { to, len: message.length })
+    return
+  }
   const result = deps.transport.send({ target: to, message, ...(topic ? { topic } : {}) })
   if (result.ok) log('reply-sent', { to, len: message.length })
   else log('reply-error', { to, error: result.error })
+}
+
+// Best-effort lifecycle probe (NEVER throws): is the requester an ephemeral
+// (FaaS) peer? Any read failure (no registry / not registered / malformed /
+// missing profile) → false, i.e. DELIVER the reply. Failing OPEN is the safe
+// default: the worst case is the pre-existing behavior (a delivered ack), never
+// a swallowed reply to a durable caller and never a crash.
+function requesterIsEphemeral(deps: RegistrationDeps, requester: string): boolean {
+  try {
+    const cwd = deps.store.findCwd(requester)
+    return cwd ? deps.store.isEphemeral(cwd) : false
+  } catch {
+    return false
+  }
 }
 
 export function handleEnvelope(
@@ -132,9 +157,19 @@ export function handleEnvelope(
   const requester = env.fromPersonality
   const topic = env.topic
 
+  // Lifecycle gate, resolved ONCE for every reply on this envelope: when the
+  // requester is an ephemeral (FaaS) peer, a delivered registration reply would
+  // spawn a spurious worker session (ADR-006), so all replies below are
+  // delivery-suppressed for it (the registration itself still writes state and
+  // reloads the engine — only the wire ack is dropped). Non-ephemeral callers
+  // keep full interactive feedback. Computed off the SENDER, so it applies
+  // uniformly to the parse-error reply too — a durable caller still gets its
+  // teaching error; an ephemeral one never spawns on a malformed body.
+  const ephemeral = requesterIsEphemeral(deps, requester)
+
   const parsed = parseRegistration(role, env.message, deps.scriptProbe ? { scriptProbe: deps.scriptProbe } : {})
   if (!parsed.ok) {
-    reply(deps, requester, parsed.error, topic)
+    reply(deps, requester, parsed.error, topic, ephemeral)
     log('register-rejected', { requester, role })
     return { outcome: 'rejected', reply: parsed.error, reloaded: false }
   }
@@ -149,7 +184,7 @@ export function handleEnvelope(
   } catch (err) {
     // Malformed registry — surface as a teaching error rather than crash.
     const msg = `notifier-${role}: cannot read peer registry: ${err instanceof Error ? err.message : String(err)}`
-    reply(deps, requester, msg, topic)
+    reply(deps, requester, msg, topic, ephemeral)
     log('registry-error', { requester, error: err instanceof Error ? err.message : String(err) })
     return { outcome: 'rejected', reply: msg, reloaded: false }
   }
@@ -157,12 +192,12 @@ export function handleEnvelope(
     const msg =
       `notifier-${role}: requester "${requester}" is not in the peer registry — ` +
       `run IAP from that peer's cwd at least once so it is registered, then retry.\n\n${describeFormat(role)}`
-    reply(deps, requester, msg, topic)
+    reply(deps, requester, msg, topic, ephemeral)
     log('register-unknown-requester', { requester })
     return { outcome: 'rejected', reply: msg, reloaded: false }
   }
 
-  return dispatch(parsed.command, role, requester, cwd, topic, deps)
+  return dispatch(parsed.command, role, requester, cwd, topic, deps, ephemeral)
 }
 
 function dispatch(
@@ -172,6 +207,7 @@ function dispatch(
   cwd: string,
   topic: string | undefined,
   deps: RegistrationDeps,
+  ephemeral: boolean,
 ): HandleResult {
   const log = deps.log ?? noopLog
 
@@ -193,7 +229,7 @@ function dispatch(
   // knowledge of the command format needed.
   if (command.kind === 'help') {
     const msg = `${activeBlock(role, requester, ownTriggers())}\n\n${describeFormat(role)}`
-    reply(deps, requester, msg, topic)
+    reply(deps, requester, msg, topic, ephemeral)
     log('register-help', { requester })
     return { outcome: 'helped', reply: msg, reloaded: false }
   }
@@ -201,7 +237,7 @@ function dispatch(
   if (command.kind === 'list') {
     const triggers = ownTriggers()
     const msg = cliReply(role, requester, triggers)
-    reply(deps, requester, msg, topic)
+    reply(deps, requester, msg, topic, ephemeral)
     log('register-list', { requester, count: triggers.length })
     return { outcome: 'listed', reply: msg, reloaded: false }
   }
@@ -216,13 +252,13 @@ function dispatch(
       const msg =
         `notifier-${role}: no trigger with id "${command.id}" in your profile (nothing removed).\n\n` +
         cliReply(role, requester, ownTriggers())
-      reply(deps, requester, msg, topic)
+      reply(deps, requester, msg, topic, ephemeral)
       log('unregister-not-found', { requester, id: command.id, ...(existing ? { otherRole: existing.role } : {}) })
       return { outcome: 'not-found', reply: msg, reloaded: false }
     }
     const reloaded = runReload(deps, log)
     const msg = `✓ unregistered ${role} trigger "${command.id}".\n\n${cliReply(role, requester, ownTriggers())}`
-    reply(deps, requester, msg, topic)
+    reply(deps, requester, msg, topic, ephemeral)
     log('unregistered', { requester, id: command.id })
     return { outcome: 'unregistered', reply: msg, reloaded }
   }
@@ -251,7 +287,7 @@ function dispatch(
     (stored.topic ? ` (topic "${stored.topic}")` : '') +
     `. ${live}`
   const msg = `${header}\n\n${cliReply(role, requester, ownTriggers())}`
-  reply(deps, requester, msg, topic)
+  reply(deps, requester, msg, topic, ephemeral)
   log(outcome === 'replaced' ? 'register-replaced' : 'registered', {
     requester,
     id: stored.id,
