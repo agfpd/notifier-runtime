@@ -1,0 +1,26 @@
+{
+  "name": "@agfpd/notifier-runtime",
+  "version": "0.2.0",
+  "description": "Notifier runtime-router for IAP peers — time primitive (cron/heartbeat).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "notifier-runtime": "bin/notifier-runtime"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "tsconfig.json"
+  ],
+  "scripts": {
+    "start": "bun src/cli.ts run",
+    "self-install": "bun src/cli.ts self-install",
+    "doctor": "bun src/cli.ts doctor --json",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}

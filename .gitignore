@@ -1,0 +1,10 @@
+node_modules/
+.DS_Store
+*.log
+# Machine/deploy state, not package source
+.claude/
+.codex/
+.iapeer/
+.mcp.json
+# Internal planning/handoff scratch, not package source
+_planning/
