@@ -2,7 +2,7 @@
 
 [Русский](ru/README.md) · **English**
 
-notifier-runtime is the time presence of an [iapeer](https://github.com/agfpd/iapeer) agent team. It carries two peers — `timer`, which sends a message on a schedule, and `watcher`, which turns a long-lived script's output into signals. Any peer registers a trigger by sending it one IAP message; the runtime fires it, retries delivery, and escalates a signal that can't be delivered rather than dropping it.
+notifier-runtime is the time component of an [iapeer](https://github.com/agfpd/iapeer) agent team. It carries two peers — `timer`, which sends a message on a schedule, and `watcher`, which turns a long-lived script's output into signals. Any peer registers a trigger by sending it one IAP message; the runtime fires it, retries delivery, and escalates a signal that can't be delivered rather than dropping it.
 
 This is the package documentation: what the runtime is, how to register triggers, and how it runs inside iapeer.
 

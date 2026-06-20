@@ -1,11 +1,13 @@
 # Changelog
 
-All notable changes to notifier-runtime are documented here.
+All notable changes to **notifier-runtime** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.4] — 2026-06-20
+## [Unreleased]
+
+## [0.3.4] - 2026-06-20
 
 ### Changed
 
@@ -14,21 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are no longer accepted — the foundation normalizes any legacy value upstream,
   so only the current vocabulary reaches the runtime.
 
-## [0.3.3] — 2026-06-20
+## [0.3.3] - 2026-06-20
 
 ### Removed
 
 - The `prepare` and `install` CLI aliases — use `self-config` and `self-install`.
 - The `msg` field alias in trigger registration — use `message`.
 
-## [0.3.2] — 2026-06-20
+## [0.3.2] - 2026-06-20
 
 ### Removed
 
 - The bare-CR `\r`-fold in the envelope parser, retired with the fleet-wide
   pty-only delivery migration. No behavior change on pty (LF) input.
 
-## [0.3.1] — 2026-06-20
+## [0.3.1] - 2026-06-20
 
 ### Changed
 
@@ -36,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file-local, and applied behavior-preserving refactors. The package description
   now names both primitives, and a `self-config` npm script was added.
 
-## [0.3.0] — 2026-06-18
+## [0.3.0] - 2026-06-18
 
 ### Added
 
@@ -52,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Exclude `.DS_Store` from the on-host docs copy.
 
-## [0.2.2] — 2026-06-18
+## [0.2.2] - 2026-06-18
 
 ### Fixed
 
@@ -61,13 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spawn a spurious one. The registration still writes state and reloads live;
   only the wire ack is dropped.
 
-## [0.2.1] — 2026-06-18
+## [0.2.1] - 2026-06-18
 
 ### Fixed
 
 - Ship `docs/` in the npm tarball.
 
-## [0.2.0] — 2026-06-18
+## [0.2.0] - 2026-06-18
 
 First public release — the time component of iapeer. Two peers on one runtime:
 `timer` (cron and `@every` schedules with an optional check-gate) and `watcher`
@@ -85,7 +87,7 @@ First public release — the time component of iapeer. Two peers on one runtime:
 - npx self-install and a per-peer self-config hook (the package side of the
   iapeer runtime contract).
 
-## 0.1.0 – 0.1.4 — pre-public-release
+## 0.1.0 – 0.1.4 - pre-public-release
 
 Pre-public iterations on npm during initial development: the `timer` scheduler
 and `watcher` supervisor primitives, registration-by-message, live same-id

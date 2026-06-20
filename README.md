@@ -7,9 +7,9 @@
 [![license](https://img.shields.io/npm/l/@agfpd/notifier-runtime)](./LICENSE)
 [![platform](https://img.shields.io/badge/platform-macOS-lightgrey)](#quick-start)
 
-notifier-runtime is what fires in an [iapeer](https://github.com/agfpd/iapeer) team when nobody asked — a daily message at 9:00, a heartbeat every 30 minutes, an alert the moment a log line matches. It carries two peers: `timer` sends a message on a schedule, `watcher` turns a long-lived script's output into signals. A peer registers a trigger with one IAP message; the runtime fires it, retries delivery, and escalates a signal it can't deliver rather than dropping it.
+notifier-runtime fires the messages an [iapeer](https://github.com/agfpd/iapeer) team never asked for: a daily message at 9:00, a heartbeat every 30 minutes, an alert the moment a log line matches. It carries two peers: `timer` sends a message on a schedule, `watcher` turns a long-lived script's output into signals. A peer registers a trigger with one IAP message; the runtime fires it, retries delivery, and escalates a signal it can't deliver rather than dropping it.
 
-> **Built for iapeer.** It isn't a standalone scheduler — it runs only inside [iapeer](https://github.com/agfpd/iapeer), alongside `iapeer-memory`. It's a plug-in runtime, the same kind as `telegram-runtime`, that iapeer provisions and launches and whose signals travel over iapeer's own messaging.
+> **Built for iapeer.** It isn't a standalone scheduler — it runs only inside [iapeer](https://github.com/agfpd/iapeer), alongside `iapeer-memory`. It's an iapeer runtime, the same kind as `telegram-runtime`, that iapeer provisions and launches and whose signals travel over iapeer's own messaging.
 
 ## How it works
 
@@ -55,7 +55,7 @@ notifier-runtime doctor
 - **Two primitives, one runtime.** `timer` for time (cron and intervals, with a check-gate), `watcher` for events (a script's output, with hang detection) — both provisioned and launched by iapeer.
 - **Registration is a message.** A peer schedules itself by sending one JSON body; the trigger is picked up live, with no restart, and stored in that peer's own profile.
 - **Owned and isolated.** A trigger belongs to the peer that registered it. A peer can only list, edit, and remove its own — a security boundary, not a convention.
-- **Nothing is dropped silently.** An undelivered signal is retried and escalated down a chain — fallback, owner, backstop — and a signal that can't reach anyone is written to a durable dead-letter file, not lost.
+- **Escalation, not loss.** An undelivered signal is retried and escalated down a chain — fallback, owner, backstop — and a signal that can't reach anyone is written to a durable dead-letter file.
 - **Crash-safe.** Signals are written to a write-ahead spool before delivery, so a restart mid-chain re-drains them instead of stranding them.
 - **Self-correcting input.** A malformed registration replies with the exact problem plus the format and worked examples, so the sender fixes it from the reply alone.
 
