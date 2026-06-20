@@ -8,13 +8,16 @@
 // extraction, same missing→throw behavior. (The old tmux-paste \r-fold was
 // retired with the fleet-wide pty-only migration — see parseIapEnvelope.)
 
-// Intelligence is part of the IAP identity contract (human/artificial/scripted).
-// Mirrored here so the envelope can carry from-intelligence without importing
-// telegram-runtime types.
-export type Intelligence = 'human' | 'artificial' | 'scripted'
+// Intelligence is part of the IAP identity contract — current vocabulary is
+// natural / artificial / absent. Mirrored here so the envelope can carry
+// from-intelligence without importing telegram-runtime types. The legacy values
+// (human / scripted) are NOT accepted: the foundation normalizes any legacy value
+// at its boundary (human→natural, scripted→absent) before an envelope reaches a
+// runtime, so only the current vocabulary arrives here.
+export type Intelligence = 'natural' | 'artificial' | 'absent'
 
 function isIntelligence(value: unknown): value is Intelligence {
-  return value === 'human' || value === 'artificial' || value === 'scripted'
+  return value === 'natural' || value === 'artificial' || value === 'absent'
 }
 
 export interface IapEnvelope {

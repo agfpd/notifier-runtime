@@ -63,11 +63,21 @@ describe('parseIapEnvelope', () => {
     expect(parseIapEnvelope(xml).attachments).toEqual(['/tmp/a.png', '/tmp/b.txt'])
   })
 
-  test('unknown from-intelligence is dropped (only human/artificial/scripted kept)', () => {
-    const xml =
-      '<iap from-personality="boris" from-runtime="claude" from-intelligence="bogus">' +
-      '<message>m</message></iap>'
-    expect(parseIapEnvelope(xml).fromIntelligence).toBeUndefined()
+  test('from-intelligence: current vocab (natural/artificial/absent) kept; legacy + unknown dropped', () => {
+    const intel = (v: string) =>
+      parseIapEnvelope(
+        `<iap from-personality="boris" from-runtime="claude" from-intelligence="${v}"><message>m</message></iap>`,
+      ).fromIntelligence
+    // Current contract vocabulary is kept verbatim.
+    expect(intel('natural')).toBe('natural')
+    expect(intel('artificial')).toBe('artificial')
+    expect(intel('absent')).toBe('absent')
+    // Legacy values (human/scripted) are no longer accepted — the foundation
+    // normalizes them upstream, so raw legacy never reaches the parser; an unknown
+    // value is dropped to undefined.
+    expect(intel('human')).toBeUndefined()
+    expect(intel('scripted')).toBeUndefined()
+    expect(intel('bogus')).toBeUndefined()
   })
 
   test('CDATA with an embedded ]]> (split-and-rejoin) round-trips', () => {
