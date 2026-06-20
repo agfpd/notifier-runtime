@@ -36,13 +36,15 @@ describe('parseIapEnvelope', () => {
     expect(parseIapEnvelope(xml).message).toBe('hello there')
   })
 
-  test('\\r-fold: bare CR and CRLF normalize to \\n', () => {
-    // Defensive CR/LF normalization: a delivery path that yields bare CRs (e.g.
-    // the dev/shadow tmux branch, where raw-mode stdin sees them) is folded. The
-    // parser folds \r\n and lone \r → \n over the whole envelope BEFORE extracting fields.
+  test('multi-line LF message body parses verbatim (pty bracketed-paste contract)', () => {
+    // Production is pty-only (iapeer ≥0.4.9): the supervisor bracketed-pastes the
+    // envelope, so the body's LF newlines arrive verbatim. The parser does NO
+    // line-ending normalization — the old tmux-paste LF→CR rewrite (and the
+    // bare-CR fold that compensated for it) was removed fleet-wide, leaving no
+    // bare-CR source. LF in → LF out, unchanged.
     const xml =
       '<iap from-personality="boris" from-runtime="claude">' +
-      '<message><![CDATA[line1\rline2\r\nline3]]></message></iap>'
+      '<message><![CDATA[line1\nline2\nline3]]></message></iap>'
     expect(parseIapEnvelope(xml).message).toBe('line1\nline2\nline3')
   })
 

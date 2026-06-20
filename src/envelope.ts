@@ -4,8 +4,9 @@
 // byte stream on <iap>…</iap> markers EXACTLY as telegram-runtime does — the
 // envelope wire format is shared across runtimes (`iap send` writes the same
 // XML), and that parser is validated in production. Porting verbatim (rather
-// than re-deriving) is the whole point: same CDATA handling, same defensive
-// \r-fold, same attribute extraction, same missing→throw behavior.
+// than re-deriving) is the whole point: same CDATA handling, same attribute
+// extraction, same missing→throw behavior. (The old tmux-paste \r-fold was
+// retired with the fleet-wide pty-only migration — see parseIapEnvelope.)
 
 // Intelligence is part of the IAP identity contract (human/artificial/scripted).
 // Mirrored here so the envelope can carry from-intelligence without importing
@@ -57,16 +58,15 @@ function tagContent(xml: string, tag: string): string | undefined {
 }
 
 export function parseIapEnvelope(xml: string): IapEnvelope {
-  // Defensive line-ending normalization before parsing. Production delivery onto
-  // the pane is the pty supervisor, where input arrives LF-terminated — so this
-  // fold is a no-op on that path. It still covers any path that delivers bare CRs
-  // (the internal dev/shadow tmux branch, where tmux paste rewrites LF→CR and the
-  // raw-mode stdin reader then sees bare CRs). Fold \r\n and lone \r → \n once,
-  // over the whole envelope: message and attachments both come out LF-terminated.
-  // The attachments split (/\r?\n/) is unaffected — it already keys on \n.
-  // NB: whether any CR can still reach this under pure-pty is a delivery-contract
-  // (foundation-surface) question — kept defensive pending that confirmation.
-  xml = xml.replace(/\r\n?/g, '\n')
+  // No line-ending normalization. Production delivery onto the pane is the pty
+  // supervisor (iapeer ≥0.4.9, pty-only), which bracketed-pastes the envelope —
+  // the body's LF newlines arrive verbatim and the bare \r submit keystroke lands
+  // AFTER the </iap> close tag (outside the sliced envelope). The old tmux-paste
+  // path that rewrote every LF→CR (and required folding bare CRs back to \n) has
+  // been physically removed fleet-wide, so there is no bare-CR source left to
+  // defend against. The attachments split below still tolerates an optional CR
+  // before \n (a Windows-formatted attachment list) — independent of the retired
+  // tmux fold.
   const open = /^<iap\s+([^>]*)>/.exec(xml.trim())
   if (!open) throw new EnvelopeError('invalid IAP envelope: missing <iap ...>')
   const fromPersonality = attrValue(open[1], 'from-personality')
