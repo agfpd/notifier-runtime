@@ -255,7 +255,6 @@ async function selfInstallCommand(): Promise<void> {
 // inside createPeer→initPeer (cwd = peer cwd, IAPEER_PEER_* in env). Writes the role's
 // registration self-doc into the local peer profile (rich runtime state), PRESERVING
 // the foundation-provisioned identity (intelligence=absent). exit 0 = configured.
-// `prepare` is a back-compat alias.
 async function selfConfigCommand(): Promise<void> {
   const r = runSelfConfig({ env: process.env, cwd: process.cwd() })
   process.stdout.write(`${r.profilePath}\n`)
@@ -395,11 +394,9 @@ async function main(): Promise<void> {
   }
   switch (cmd) {
     case 'self-install':
-    case 'install': // back-compat alias
       await selfInstallCommand()
       return
     case 'self-config':
-    case 'prepare': // back-compat alias
       await selfConfigCommand()
       return
     case 'run':

@@ -114,8 +114,7 @@ function resolveOptionalId(entry: any, label: string): { id?: string } | { error
 
 // Parse and validate `profile.notifier.triggers[]` for one owner. A single bad
 // trigger is collected into `errors` and skipped — it never aborts the whole
-// profile (one peer's typo must not silence every other trigger). `message` is
-// canonical; `msg` is accepted as an alias.
+// profile (one peer's typo must not silence every other trigger).
 export function parseTriggersFromProfile(profile: any, owner: string): ParseTriggersResult {
   const ok: Trigger[] = []
   const errors: string[] = []
@@ -149,10 +148,9 @@ export function parseTriggersFromProfile(profile: any, owner: string): ParseTrig
   return { ok, errors }
 }
 
-// Validate one `role: 'time'` entry. Canonical field `message`, alias `msg`.
-// `when` must parse; `target` must be a valid peer name; `check` (if present)
-// must be a non-empty path. A failure pushes to `errors` and returns without
-// adding to `ok`.
+// Validate one `role: 'time'` entry. `when` must parse; `target` must be a valid
+// peer name; `check` (if present) must be a non-empty path. A failure pushes to
+// `errors` and returns without adding to `ok`.
 function parseTimeEntry(
   entry: any,
   label: string,
@@ -182,7 +180,7 @@ function parseTimeEntry(
     return
   }
 
-  const message = asString(entry.message) ?? asString(entry.msg)
+  const message = asString(entry.message)
   if (!message || message.length === 0) {
     errors.push(`${label}: missing non-empty "message"`)
     return

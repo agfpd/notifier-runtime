@@ -12,8 +12,7 @@
 //
 // IDENTITY IS THE FOUNDATION'S DOMAIN: the hook PRESERVES every field the foundation
 // provisioned (especially `intelligence`=absent and `personality`) — it only sets the
-// rich `description`. (An earlier `prepare` wrote intelligence='scripted'; the frozen
-// contract is `absent`, provisioned by the foundation, so the hook must not clobber it.)
+// rich `description`. Identity is the foundation's to provision; the hook must not clobber it.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { randomUUID } from 'crypto'

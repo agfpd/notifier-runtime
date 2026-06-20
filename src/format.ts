@@ -226,7 +226,7 @@ function parseTimerRegister(obj: Record<string, unknown>): ParseResult {
     return teach('timer', `invalid "when" (${when}): ${err instanceof Error ? err.message : String(err)}`)
   }
 
-  const message = asString(obj.message) ?? asString(obj.msg)
+  const message = asString(obj.message)
   if (!message || message.length === 0) return teach('timer', 'missing non-empty "message"')
 
   const target = asString(obj.target)

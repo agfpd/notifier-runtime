@@ -19,8 +19,7 @@ import { RUNTIME } from './constants.ts'
 /** The notifier runtime's two FIXED-FUNCTION peers (declared-set, mode a). Both are
  *  intelligence=absent: programmatic sources, no LLM and no human — the runtime's
  *  zone default and exactly what the launch nature-gate expects (nothing to refuse).
- *  The contract froze this on `absent` (the earlier `scripted` is a legacy alias the
- *  foundation normalizes to `absent` anyway — we declare the frozen value directly). */
+ *  The contract froze this on `absent`; we declare that value directly. */
 export const DECLARED_PEERS = ['timer', 'watcher'] as const
 export type DeclaredPeer = (typeof DECLARED_PEERS)[number]
 

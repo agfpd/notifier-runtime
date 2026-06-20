@@ -26,7 +26,7 @@ You don't run this directly; iapeer launches it as `notifier-timer` and `notifie
 
 ## `self-config`
 
-The per-peer hook the foundation invokes when it creates or onboards a notifier peer (`prepare` is a back-compatible alias). It writes the role's registration self-documentation into the peer's local profile description, preserving the peer's identity (`intelligence: absent`). It reads which role it's configuring from `IAPEER_PEER_PERSONALITY`. Exit `0` means configured.
+The per-peer hook the foundation invokes when it creates or onboards a notifier peer. It writes the role's registration self-documentation into the peer's local profile description, preserving the peer's identity (`intelligence: absent`). It reads which role it's configuring from `IAPEER_PEER_PERSONALITY`. Exit `0` means configured.
 
 ## `doctor`
 
