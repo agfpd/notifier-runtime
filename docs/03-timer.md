@@ -78,7 +78,7 @@ The check is fail-safe: if the command can't be found, isn't executable, times o
 | Field | Required | Meaning |
 |-------|----------|---------|
 | `when` | yes | cron expression or `@every` interval |
-| `message` | yes | the text delivered to the target (`msg` is accepted as an alias) |
+| `message` | yes | the text delivered to the target |
 | `target` | yes | the peer to message, or `"self"` for the registering peer |
 | `check` | no | a command; fire only if it exits `0` |
 | `id` | no | a stable name for the trigger; omit and one is derived from the content |

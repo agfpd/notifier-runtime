@@ -8,6 +8,7 @@
     "notifier-runtime": "bin/notifier-runtime"
   },
   "files": [
+    "CHANGELOG.md",
     "bin/",
     "docs/",
     "src/",
