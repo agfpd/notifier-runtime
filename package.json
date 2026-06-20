@@ -1,6 +1,6 @@
 {
   "name": "@agfpd/notifier-runtime",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Notifier runtime-router for IAP peers — time (cron/heartbeat) and event (watcher) primitives.",
   "license": "Apache-2.0",
   "type": "module",
