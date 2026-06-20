@@ -57,7 +57,7 @@ export interface PeerProfileStoreDeps {
   writeFile?: (path: string, content: string) => void
 }
 
-export class PeerProfileStoreError extends Error {}
+class PeerProfileStoreError extends Error {}
 
 function defaultProfilePath(cwd: string): string {
   return join(cwd, '.iapeer', 'peer-profile.json')
@@ -115,12 +115,6 @@ export class PeerProfileStore {
       }
     }
     return null
-  }
-
-  // True iff `personality` is a known peer (registry resolvable). Used by the
-  // format layer's target check via registration.ts.
-  isKnownPeer(personality: string): boolean {
-    return this.findCwd(personality) !== null
   }
 
   // True iff the peer at `cwd` is an EPHEMERAL (FaaS) peer — `wake_policy:

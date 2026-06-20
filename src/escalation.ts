@@ -165,7 +165,7 @@ export class InMemorySpool implements Spool {
 
 // ── Escalator ────────────────────────────────────────────────────────────────
 
-export interface EscalatorDeps {
+interface EscalatorDeps {
   transport: AsyncTransport
   spool: Spool
   log: Log
@@ -177,7 +177,7 @@ export interface EscalatorDeps {
   makeId?: () => string
 }
 
-export interface EscalatorOpts {
+interface EscalatorOpts {
   attemptsPerLink?: number
   retryDelayMs?: number
   backstop?: string

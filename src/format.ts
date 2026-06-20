@@ -7,8 +7,8 @@ import { parseWhen } from './when.ts'
 // One module owns: (1) the wire format for a registration message body,
 // (2) `parseRegistration` which validates a body and produces a typed command,
 // (3) `describeFormat` which renders the human-facing self-doc (peer.description
-// written by `notifier-runtime prepare`), and (4) `EXAMPLES` — canonical JSON
-// strings reused BOTH inside describeFormat AND in the invariant test.
+// written by the self-config hook, selfConfig.ts), and (4) `EXAMPLES` — canonical
+// JSON strings reused BOTH inside describeFormat AND in the invariant test.
 //
 // The reliability invariant (format.test.ts): every string in EXAMPLES[role]
 // parses via parseRegistration to ok:true. Because describeFormat embeds those
@@ -70,6 +70,12 @@ export type ParseResult = { ok: true; command: Command } | { ok: false; error: s
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+// Bare conversational help token: "help" (any case) or "?". Checked both before
+// JSON.parse (a plain "help") and after (a quoted "help" / "?" JSON string).
+function isHelpToken(s: string): boolean {
+  return s === '?' || s.toLowerCase() === 'help'
 }
 
 // A target is valid if it is the literal "self" (resolved to the requester
@@ -134,7 +140,7 @@ export function parseRegistration(role: Role, body: string, opts: ParseOptions =
   // help command (active triggers + format), rendered by the registration layer.
   // Intercept BEFORE JSON.parse so a bare "help" is help, not a teaching error.
   const trimmed = body.trim()
-  if (trimmed === '?' || trimmed.toLowerCase() === 'help') {
+  if (isHelpToken(trimmed)) {
     return { ok: true, command: { kind: 'help' } }
   }
 
@@ -146,8 +152,7 @@ export function parseRegistration(role: Role, body: string, opts: ParseOptions =
   }
   // A QUOTED bare help ("help" / "?") also lands here as a JSON string → help.
   if (typeof parsed === 'string') {
-    const s = parsed.trim()
-    if (s === '?' || s.toLowerCase() === 'help') return { ok: true, command: { kind: 'help' } }
+    if (isHelpToken(parsed.trim())) return { ok: true, command: { kind: 'help' } }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return teach(role, 'body must be a JSON object')
@@ -334,8 +339,8 @@ export const EXAMPLES: Record<Role, string[]> = {
   ],
 }
 
-// Render the self-doc for peer.description (written by `notifier-runtime
-// prepare`). Embeds EXAMPLES[role] verbatim so the description and the
+// Render the self-doc for peer.description (written by the self-config hook,
+// selfConfig.ts). Embeds EXAMPLES[role] verbatim so the description and the
 // invariant test share one source.
 export function describeFormat(role: Role): string {
   const lines: string[] = []

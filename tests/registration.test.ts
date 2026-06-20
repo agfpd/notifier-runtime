@@ -414,11 +414,10 @@ describe('handleEnvelope — CLI-like replies', () => {
 
 describe('PeerProfileStore — explicit id round-trips through projection', () => {
   test('a stored explicit id survives a list read', () => {
-    const { files, store } = makeFs({ '/reg/index.json': REGISTRY })
+    const { store } = makeFs({ '/reg/index.json': REGISTRY })
     handleEnvelope(env({ message: JSON.stringify({ id: 'named', when: '@every 5m', message: 'm', target: 'self' }) }), 'timer', { store, transport: new FakeTransport() })
     const triggers = store.list('/peers/boris')
     expect(triggers[0]!.id).toBe('named')
-    void files
   })
 })
 

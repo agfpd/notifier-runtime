@@ -41,9 +41,7 @@ export class Scheduler {
   private sleepWaker: (() => void) | null = null
 
   // anchor = now() at construction; nextAt = first fire strictly after now.
-  // A trigger whose `when` fails to parse here is dropped with a loud log
-  // (loadTriggers should have caught it, but the scheduler is the last gate and
-  // must not crash on one bad expression).
+  // Per-trigger `when` parse/drop is handled by makeSlot (see its comment).
   constructor(triggers: TimeTrigger[], deps: SchedulerDeps) {
     this.deps = deps
     const start = deps.now()
@@ -144,7 +142,7 @@ export class Scheduler {
   }
 
   // Earliest nextAt across all live slots, or null when there are no triggers.
-  nextWakeup(_now?: Date): Date | null {
+  nextWakeup(): Date | null {
     let earliest: Date | null = null
     for (const slot of this.slots) {
       if (earliest === null || slot.nextAt.getTime() < earliest.getTime()) {
@@ -228,7 +226,7 @@ export class Scheduler {
   async run(signal?: AbortSignal): Promise<void> {
     while (!signal?.aborted) {
       const now = this.deps.now()
-      const wakeup = this.nextWakeup(now)
+      const wakeup = this.nextWakeup()
       // No triggers → still wake on the cap so a future reload is picked up;
       // never spin tightly.
       const targetMs =

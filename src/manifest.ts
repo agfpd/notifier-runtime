@@ -15,7 +15,6 @@ import { homedir } from 'os'
 import { dirname, join } from 'path'
 import pkg from '../package.json'
 import { RUNTIME } from './constants.ts'
-import { describeFormat } from './format.ts'
 
 /** The notifier runtime's two FIXED-FUNCTION peers (declared-set, mode a). Both are
  *  intelligence=absent: programmatic sources, no LLM and no human — the runtime's
@@ -135,8 +134,3 @@ export function readManifest(env: NodeJS.ProcessEnv = process.env): RuntimeManif
   if (!existsSync(path)) return null
   return JSON.parse(readFileSync(path, 'utf8')) as RuntimeManifest
 }
-
-// describeFormat is re-exported so a caller (self-config) and the manifest builder
-// share one source for the format doc, even though the manifest itself only carries
-// the short blurb.
-export { describeFormat }

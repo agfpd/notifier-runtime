@@ -147,7 +147,7 @@ export class FakeProcessHandle implements ProcessHandle {
   readonly kills: Array<NodeJS.Signals | undefined> = []
   readonly pid?: number
 
-  constructor(public readonly cmd: string, public readonly args: string[], pid = 4242) {
+  constructor(public readonly cmd: string, public readonly args: string[], pid: number) {
     this.pid = pid
   }
 
@@ -183,10 +183,6 @@ export class FakeProcessHandle implements ProcessHandle {
     this.exited = true
     this.lineBuffer.flush()
     this.exitCb?.({ code, signal })
-  }
-
-  get isExited(): boolean {
-    return this.exited
   }
 }
 

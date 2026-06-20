@@ -17,6 +17,14 @@ export interface Transport {
   send(sig: Signal): SendResult
 }
 
+// The `iapeer send` argv for a signal — single source for both the sync and async
+// transports (message goes on stdin via `--message-file -`; topic is optional).
+function iapSendArgs(sig: Signal): string[] {
+  const args = ['send', sig.target, '--message-file', '-']
+  if (sig.topic) args.push('--topic', sig.topic)
+  return args
+}
+
 export interface IapTransportConfig {
   iapBin?: string
   cwd?: string
@@ -35,11 +43,7 @@ export function makeIapTransport(cfg: IapTransportConfig = {}): Transport {
   const iapBin = cfg.iapBin ?? process.env.IAP_BIN ?? 'iapeer'
   return {
     send(sig: Signal): SendResult {
-      const args = ['send', sig.target, '--message-file', '-']
-      if (sig.topic) {
-        args.push('--topic', sig.topic)
-      }
-      const result = spawnSync(iapBin, args, {
+      const result = spawnSync(iapBin, iapSendArgs(sig), {
         cwd: cfg.cwd,
         env: cfg.env,
         input: sig.message,
@@ -81,8 +85,7 @@ export function makeAsyncIapTransport(cfg: AsyncIapTransportConfig = {}): AsyncT
   return {
     send(sig: Signal): Promise<SendResult> {
       return new Promise<SendResult>(resolve => {
-        const args = ['send', sig.target, '--message-file', '-']
-        if (sig.topic) args.push('--topic', sig.topic)
+        const args = iapSendArgs(sig)
 
         let settled = false
         let timedOut = false
@@ -139,22 +142,6 @@ export function makeAsyncIapTransport(cfg: AsyncIapTransportConfig = {}): AsyncT
         child.stdin?.end()
       })
     },
-  }
-}
-
-// Test double for the async path: scripted per-target results + a recorded
-// send order. `script` maps target → a queue of results (shifted per send);
-// an exhausted/absent queue falls back to `defaultResult`.
-export class FakeAsyncTransport implements AsyncTransport {
-  sent: Signal[] = []
-  defaultResult: SendResult = { ok: true }
-  script = new Map<string, SendResult[]>()
-
-  async send(sig: Signal): Promise<SendResult> {
-    this.sent.push(sig)
-    const queue = this.script.get(sig.target)
-    if (queue && queue.length > 0) return queue.shift()!
-    return this.defaultResult
   }
 }
 

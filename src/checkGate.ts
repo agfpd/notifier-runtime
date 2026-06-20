@@ -15,8 +15,6 @@ export interface CheckResult {
 
 export interface RunCheckOptions {
   timeoutMs?: number
-  cwd?: string
-  env?: NodeJS.ProcessEnv
 }
 
 // Evaluate a check command. No check → unconditional send. With a check:
@@ -34,8 +32,6 @@ export function runCheck(check: string | undefined, opts: RunCheckOptions = {}):
 
   const result = spawnSync(check, [], {
     timeout: timeoutMs,
-    cwd: opts.cwd,
-    env: opts.env,
     // We only need the exit status; capturing output as strings keeps any
     // diagnostics available without binary-buffer handling.
     encoding: 'utf8',

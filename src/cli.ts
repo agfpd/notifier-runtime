@@ -186,7 +186,8 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
 
 // Install the raw-mode stdin envelope reader (PORTED from telegram-runtime's
 // installStdinEnvelopeReader). The notifier's run-pane receives `iap send`
-// envelopes pasted into its tmux pane; we read the raw byte stream, slice on
+// envelopes delivered onto its pane input (the pty supervisor in production); we
+// read the raw byte stream, slice on
 // <iap>…</iap> markers (extractIapEnvelopes), parse each (parseIapEnvelope), and
 // dispatch to the registration handler. Raw mode disables the pty canonical
 // line-discipline (which caps a line at ~1024B on macOS and silently drops the
@@ -394,7 +395,7 @@ async function main(): Promise<void> {
   }
   switch (cmd) {
     case 'self-install':
-    case 'install':
+    case 'install': // back-compat alias
       await selfInstallCommand()
       return
     case 'self-config':

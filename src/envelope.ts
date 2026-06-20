@@ -1,11 +1,11 @@
 // IAP envelope parsing — PORTED byte-for-byte from telegram-runtime/src/cli.ts
 // (parseIapEnvelope / extractIapEnvelopes + their attr/CDATA helpers). The
-// notifier's router role reads its own tmux pane stdin and slices the raw
+// notifier's router role reads its own pane (pty) stdin and slices the raw
 // byte stream on <iap>…</iap> markers EXACTLY as telegram-runtime does — the
 // envelope wire format is shared across runtimes (`iap send` writes the same
 // XML), and that parser is validated in production. Porting verbatim (rather
-// than re-deriving) is the whole point: same CDATA handling, same \r-fold for
-// tmux paste, same attribute extraction, same missing→throw behavior.
+// than re-deriving) is the whole point: same CDATA handling, same defensive
+// \r-fold, same attribute extraction, same missing→throw behavior.
 
 // Intelligence is part of the IAP identity contract (human/artificial/scripted).
 // Mirrored here so the envelope can carry from-intelligence without importing
@@ -57,12 +57,15 @@ function tagContent(xml: string, tag: string): string | undefined {
 }
 
 export function parseIapEnvelope(xml: string): IapEnvelope {
-  // Normalize line endings before parsing. The envelope reaches us through a
-  // tmux paste-buffer into the runtime's pane, and tmux paste rewrites every LF
-  // to CR; our stdin reader runs in raw mode (setRawMode) so it sees those bare
-  // CRs verbatim instead of LFs. Fold \r\n and lone \r → \n once, over the whole
-  // envelope: message and attachments both come out LF-terminated. The
-  // attachments split (/\r?\n/) is unaffected — it already keys on \n.
+  // Defensive line-ending normalization before parsing. Production delivery onto
+  // the pane is the pty supervisor, where input arrives LF-terminated — so this
+  // fold is a no-op on that path. It still covers any path that delivers bare CRs
+  // (the internal dev/shadow tmux branch, where tmux paste rewrites LF→CR and the
+  // raw-mode stdin reader then sees bare CRs). Fold \r\n and lone \r → \n once,
+  // over the whole envelope: message and attachments both come out LF-terminated.
+  // The attachments split (/\r?\n/) is unaffected — it already keys on \n.
+  // NB: whether any CR can still reach this under pure-pty is a delivery-contract
+  // (foundation-surface) question — kept defensive pending that confirmation.
   xml = xml.replace(/\r\n?/g, '\n')
   const open = /^<iap\s+([^>]*)>/.exec(xml.trim())
   if (!open) throw new EnvelopeError('invalid IAP envelope: missing <iap ...>')

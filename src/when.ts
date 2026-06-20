@@ -23,7 +23,6 @@ export interface CronWhen {
 export interface IntervalWhen {
   kind: 'interval'
   ms: number
-  raw: string
 }
 
 export type ParsedWhen = CronWhen | IntervalWhen
@@ -182,7 +181,7 @@ function parseInterval(when: string): IntervalWhen {
   if (total < UNIT_MS.s) {
     throw new Error(`invalid interval "${when}": minimum duration is 1s`)
   }
-  return { kind: 'interval', ms: total, raw }
+  return { kind: 'interval', ms: total }
 }
 
 export function parseWhen(when: string): ParsedWhen {

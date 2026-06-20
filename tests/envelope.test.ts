@@ -36,9 +36,10 @@ describe('parseIapEnvelope', () => {
     expect(parseIapEnvelope(xml).message).toBe('hello there')
   })
 
-  test('\\r-fold: bare CR and CRLF from tmux paste normalize to \\n', () => {
-    // tmux paste rewrites LF→CR; raw-mode stdin sees bare CRs. The parser folds
-    // \r\n and lone \r → \n over the whole envelope BEFORE extracting fields.
+  test('\\r-fold: bare CR and CRLF normalize to \\n', () => {
+    // Defensive CR/LF normalization: a delivery path that yields bare CRs (e.g.
+    // the dev/shadow tmux branch, where raw-mode stdin sees them) is folded. The
+    // parser folds \r\n and lone \r → \n over the whole envelope BEFORE extracting fields.
     const xml =
       '<iap from-personality="boris" from-runtime="claude">' +
       '<message><![CDATA[line1\rline2\r\nline3]]></message></iap>'
