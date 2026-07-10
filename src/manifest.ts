@@ -69,23 +69,34 @@ export function runtimeManifestPath(env: NodeJS.ProcessEnv = process.env): strin
   return join(resolveIapeerRoot(env), 'runtimes', RUNTIME, 'runtime.json')
 }
 
-/** The single-line registry description per role — the blurb the foundation copies
- *  verbatim into peers-profiles.json and injects into EVERY peer's known-peers list.
- *  It is a DENSE, self-documenting registration card: a peer-client must be able to
- *  schedule a cron / wire a monitor straight from this injected text — no code read,
- *  no teaching round-trip. EN on purpose: text DECLARED by the runtime package is
- *  universal (team-peer descriptions stay RU; this is package-facing contract).
+/** The single-line registry description per role — the blurb injected into EVERY
+ *  peer's known-peers list. It is a DENSE, self-documenting registration card: a
+ *  peer-client must be able to schedule a cron / wire a monitor straight from this
+ *  injected text — no code read, no teaching round-trip. EN on purpose: text DECLARED
+ *  by the runtime package is universal (team-peer descriptions stay RU; this is
+ *  package-facing contract).
+ *
+ *  ONE surface, TWO carriers — SAME string. The registry entry in peers-profiles.json
+ *  is the foundation's PROJECTION of each peer's local peer-profile.json `description`
+ *  field, clamped to 450 chars (iapeer 03-peers-runtimes-identity.md). So the blurb
+ *  MUST reach that `description` field to appear intact in the registry:
+ *    1. the manifest carries it as the DECLARED description (buildManifest below), and
+ *    2. the self-config hook WRITES it into the local peer-profile `description`
+ *       (selfConfig.ts) — the field the foundation actually projects.
+ *  Both carriers emit this identical ≤450 single-line string, so the registry can
+ *  never truncate it. (A prior bug wrote the multi-line describeFormat into that field
+ *  instead; the projection clamped it to 450 and it broke mid-word — see selfConfig.ts.)
  *
  *  Length budget: the foundation caps a registry description at 450 chars (iapeer
  *  ea76e6d). Both strings stay ≤450 — the manifest.test.ts invariant enforces it, so
  *  an over-budget edit fails the suite instead of being silently truncated on deploy.
  *  Must remain ONE line (no '\n'): the known-peers list is one line per peer.
  *
- *  describeFormat (format.ts) is a SEPARATE, fuller surface — the multi-line doc the
- *  self-config hook writes into the LOCAL peer-profile and `teach()` returns on a
- *  malformed body. The blurb is now self-sufficient enough that the teaching reply is
- *  a fallback, not the primary path. */
-const PEER_BLURB: Record<DeclaredPeer, string> = {
+ *  describeFormat (format.ts) is a SEPARATE, fuller surface — the multi-line teaching
+ *  doc that `teach()`/help REPLIES with live (on a malformed body or a "help" text).
+ *  It is NOT written to any projected field; the blurb points to it ("Send 'help' →
+ *  the live format"). */
+export const PEER_BLURB: Record<DeclaredPeer, string> = {
   timer:
     'Scheduler peer: sends `message` on a schedule (arrives in a NEW session — self-contained). send_to_peer(timer, JSON): when (cron "0 9 * * *"|"@every 30m"), message, target (peer|"self"), check? (fire if exit 0), fallback? (undelivered→owner→backstop), id? (none→auto; same=replace), topic?. Send "help" (plain text) → it REPLIES by IAP with the live format + YOUR triggers (owner=requester). Manage: {"cmd":"list"|"register"|"unregister",…}.',
   watcher:

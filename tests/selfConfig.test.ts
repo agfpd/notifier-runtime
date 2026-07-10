@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { resolveRole, runSelfConfig } from '../src/selfConfig.ts'
+import { PEER_BLURB } from '../src/manifest.ts'
 
 describe('resolveRole', () => {
   test('prefers the NAMESPACED IAPEER_PEER_PERSONALITY (the foundation contract env)', () => {
@@ -34,7 +35,7 @@ describe('runSelfConfig', () => {
     return mkdtempSync(join(tmpdir(), 'notif-selfconfig-'))
   }
 
-  test('writes the role self-doc into <cwd>/.iapeer/peer-profile.json', () => {
+  test('writes the ≤450 single-line registry blurb into <cwd>/.iapeer/peer-profile.json', () => {
     const cwd = sandboxCwd()
     try {
       const r = runSelfConfig({ env: { IAPEER_PEER_PERSONALITY: 'timer' }, cwd })
@@ -42,7 +43,13 @@ describe('runSelfConfig', () => {
       expect(r.profilePath).toBe(join(cwd, '.iapeer', 'peer-profile.json'))
       const profile = JSON.parse(readFileSync(r.profilePath, 'utf8'))
       expect(typeof profile.description).toBe('string')
-      expect(profile.description).toContain('notifier-timer')
+      // The description IS the manifest blurb — the SAME string the foundation projects
+      // into peers-profiles.json. It must be the ≤450 single-line blurb, not the
+      // multi-line describeFormat doc (which the projection would truncate mid-word).
+      expect(profile.description).toBe(PEER_BLURB.timer)
+      expect(profile.description.split('\n').length).toBe(1)
+      expect(profile.description.length).toBeLessThanOrEqual(450)
+      expect(profile.description).toContain('send_to_peer(timer,')
     } finally {
       rmSync(cwd, { recursive: true, force: true })
     }
@@ -66,7 +73,9 @@ describe('runSelfConfig', () => {
       expect(profile.personality).toBe('watcher')
       expect(profile.runtime).toBe('notifier')
       expect(profile.extra).toBe('keep-me') // unknown fields preserved
-      expect(profile.description).toContain('notifier-watcher')
+      expect(profile.description).toBe(PEER_BLURB.watcher)
+      expect(profile.description.split('\n').length).toBe(1)
+      expect(profile.description.length).toBeLessThanOrEqual(450)
     } finally {
       rmSync(cwd, { recursive: true, force: true })
     }

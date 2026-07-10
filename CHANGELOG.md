@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-10
+
+### Fixed
+
+- Registry description truncated mid-word. The self-config hook wrote the
+  multi-line `describeFormat` (~1 KB) into the local profile's `description`
+  field — the exact field the foundation projects into the shared registry,
+  clamped to 450 chars. The clamp cut the timer blurb mid-sentence
+  (`… • message arrives `) and silently dropped the tail of the watcher blurb
+  (target / heartbeatSec / fallback / examples). The hook now writes the ≤450
+  single-line `PEER_BLURB` — the same string the manifest declares — so the
+  projected registry entry is always complete. The rich multi-line format doc
+  stays the live `help` / teaching reply (unchanged); the blurb points to it.
+
 ## [0.3.4] - 2026-06-20
 
 ### Changed
@@ -95,6 +109,7 @@ replace (0.1.2), outgoing-delivery log attribution (0.1.3), and the manifest
 version stamp that drives the foundation's update gate (0.1.4). Consolidated into
 the first public release, 0.2.0.
 
+[0.3.5]: https://www.npmjs.com/package/@agfpd/notifier-runtime/v/0.3.5
 [0.3.4]: https://www.npmjs.com/package/@agfpd/notifier-runtime/v/0.3.4
 [0.3.3]: https://www.npmjs.com/package/@agfpd/notifier-runtime/v/0.3.3
 [0.3.2]: https://www.npmjs.com/package/@agfpd/notifier-runtime/v/0.3.2

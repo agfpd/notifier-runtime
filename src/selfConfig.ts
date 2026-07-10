@@ -2,9 +2,17 @@
 // foundation invokes
 // it per peer as `<command> self-config` with cwd = the peer's cwd and the peer context
 // in NAMESPACED env (IAPEER_PEER_PERSONALITY/_CWD/_RUNTIME/_INTELLIGENCE + IAPEER_ROOT —
-// NOT the bare PEER_* the identity gate keys on). Our job is the RICH, runtime-specific
-// state — here: writing the registration self-doc (describeFormat) into the local peer
-// profile so the peer is self-documenting on disk.
+// NOT the bare PEER_* the identity gate keys on). Our job is the runtime-specific state
+// — here: writing the ≤450 single-line registry blurb (PEER_BLURB) into the local peer
+// profile `description` so the peer is self-documenting on disk.
+//
+// WHY THE BLURB, NOT describeFormat: the foundation PROJECTS this local
+// `description` into the shared registry (peers-profiles.json), clamping it to 450
+// chars. describeFormat is a MULTI-LINE ~1KB teaching doc — projecting it truncated the
+// registry entry mid-word ("• message arrives …"). PEER_BLURB is the one string BOTH
+// the manifest and this hook emit (see manifest.ts), so the projected registry entry is
+// always the complete ≤450 blurb. describeFormat stays the LIVE help/teach reply
+// (registration.ts) — the blurb tells the reader to send "help" to get it.
 //
 // IDEMPOTENT ("ensure runtime state for peer X"): read-merge-write, byte-stable. exit 0
 // = configured, ≠0 = failed (the foundation is fail-closed — a failed hook means the
@@ -17,8 +25,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { dirname, join } from 'path'
-import { describeFormat, type Role } from './format.ts'
+import { type Role } from './format.ts'
 import { resolvePersonality } from './identity.ts'
+import { PEER_BLURB } from './manifest.ts'
 
 export interface SelfConfigOptions {
   env?: NodeJS.ProcessEnv
@@ -42,9 +51,11 @@ export function resolveRole(env: NodeJS.ProcessEnv, cwd: string): { role: Role; 
 }
 
 /**
- * Configure runtime state for ONE peer (idempotent). Writes the role's registration
- * self-doc into <cwd>/.iapeer/peer-profile.json `description`, preserving every other
- * field. Atomic tmp+rename. Returns what was configured.
+ * Configure runtime state for ONE peer (idempotent). Writes the role's ≤450 single-line
+ * registry blurb (PEER_BLURB) into <cwd>/.iapeer/peer-profile.json `description`,
+ * preserving every other field. That `description` is the field the foundation projects
+ * (clamped to 450) into the shared registry, so it must be the blurb, not the multi-line
+ * describeFormat doc. Atomic tmp+rename. Returns what was configured.
  */
 export function runSelfConfig(opts: SelfConfigOptions = {}): SelfConfigOutcome {
   const env = opts.env ?? process.env
@@ -62,9 +73,10 @@ export function runSelfConfig(opts: SelfConfigOptions = {}): SelfConfigOutcome {
     }
   }
 
-  // Merge: set the rich description; PRESERVE everything else (intelligence, personality,
-  // and any foundation/unknown fields). Identity stays the foundation's domain.
-  const merged: Record<string, unknown> = { ...profile, description: describeFormat(role) }
+  // Merge: set the ≤450 single-line registry blurb; PRESERVE everything else
+  // (intelligence, personality, and any foundation/unknown fields). Identity stays the
+  // foundation's domain. This is the field the foundation projects into the registry.
+  const merged: Record<string, unknown> = { ...profile, description: PEER_BLURB[role] }
 
   mkdirSync(dirname(profilePath), { recursive: true, mode: 0o700 })
   const tmp = `${profilePath}.${process.pid}.${randomUUID()}.tmp`
