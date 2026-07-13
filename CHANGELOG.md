@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-14
+
+### Fixed
+
+- Envelope parser synced with the iapeer core codec (0.4.86 canon), fixing
+  inherited bug classes the core had long fixed (В37/В38 lineage):
+  - The streaming extractor located `</iap>` with a naive `indexOf` — an
+    envelope whose CDATA body quotes `</iap>` (e.g. a timer message or watcher
+    script citing an envelope example) was silently truncated, leaving a
+    garbage tail in the buffer. The close tag is now located CDATA-aware.
+  - Tag content used a lazy regex — a quoted `</message>` inside the CDATA body
+    truncated the message, and a quoted `<attachments>…</attachments>` minted
+    phantom attachments. Now a CDATA-aware scan of both the open and close tag,
+    concatenating CDATA sections (which also reconstructs a literal `]]>`).
+  - Attribute lookup was unanchored — `runtime="` matched the tail of
+    `from-runtime="…"` (coincidentally correct, structurally a mine). Lookups
+    are now name-anchored (`(?:^|\s)`).
+  - A false `<iap ` start in prose (В38) no longer swallows a following real
+    envelope or parks the buffer forever: the open tag is validated first
+    (bounded at 1 KiB), and an undecodable candidate resyncs one char forward.
+
+### Added
+
+- Read-both envelope decode (envelope-compaction F): the compact presentation
+  names (`from` / `runtime` / `intelligence`, `<msg>`) are accepted alongside
+  the legacy wire names, short names winning when both are present, and the
+  additive `ts` attribute decodes to `sentAt`. A future wire flip to the short
+  names costs the notifier nothing.
+
 ## [0.3.5] - 2026-07-10
 
 ### Fixed
