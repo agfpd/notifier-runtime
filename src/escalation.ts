@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import {
@@ -6,7 +6,7 @@ import {
   ESCALATION_ATTEMPTS_PER_LINK,
   ESCALATION_RETRY_DELAY_MS,
 } from './constants.ts'
-import type { AsyncTransport } from './transport.ts'
+import type { AsyncTransport, SendResult } from './transport.ts'
 
 // ── Delivery escalation ─────────────────────────────────────────────────────
 //
@@ -30,6 +30,13 @@ import type { AsyncTransport } from './transport.ts'
 //   • Semantics: "delivered to someone alive" beats "delivered exactly to
 //     target"; at-least-once (a duplicate alert is better than a lost one —
 //     a re-drain after a crash may re-send an already-delivered signal).
+//   • Storm-proofing (2026-07-17 escalation-storm incident): a byte-identical
+//     copy of a signal that is still IN FLIGHT carries no new information —
+//     it is coalesced onto the in-flight entry (counter, no second chain) both
+//     at deliver() time and when merging duplicates on the re-drain. And a
+//     flood breaker (supervisor) may cancelPending() a watcher's queued
+//     forwards mid-storm: cancelled entries become durable dead-letters
+//     (status "flooded") behind a loud log — never a silent drop.
 //   • Delivery is async (AsyncTransport: spawn + hard timeout): retries and
 //     wakes never block the scheduler tick or the watcher forward path, and a
 //     hung `iapeer send` can no longer wedge the notifier (the old spawnSync
@@ -71,7 +78,12 @@ export interface SpoolEntry {
   owner: string
   chain: string[]
   attempts: AttemptRecord[]
-  status: 'pending' | 'lost'
+  // pending — in flight; lost — chain exhausted (dead-letter); flooded —
+  // cancelled by the flood breaker mid-storm (dead-letter, never re-drained).
+  status: 'pending' | 'lost' | 'flooded'
+  // How many byte-identical duplicates were coalesced onto this entry while it
+  // was in flight (deliver-time dedup + re-drain merge). Absent = 0.
+  coalesced?: number
   meta?: Record<string, unknown>
 }
 
@@ -220,14 +232,48 @@ export function wrapForFallback(entry: SpoolEntry, linkIndex: number): string {
     }
   }
   const attempted = summary.map(s => `${s.target}×${s.n} (last error: ${s.lastError})`).join('; ')
+  const dup = entry.coalesced
+    ? `\n${entry.coalesced} byte-identical duplicate signal(s) were coalesced onto this one while it was queued.`
+    : ''
   return (
     `notifier-escalation: signal for "${entry.target}" UNDELIVERED — you are fallback ` +
     `link ${linkIndex + 1}/${entry.chain.length} (kind=${entry.kind}, owner=${entry.owner}` +
     `${entry.topic ? `, topic=${entry.topic}` : ''}).\n` +
-    `Failed attempts: ${attempted}.\n` +
+    `Failed attempts: ${attempted}.${dup}\n` +
     `Act on it or relay it to "${entry.target}". Original signal verbatim:\n` +
     `---\n${entry.message}`
   )
+}
+
+// Identity of a signal for coalescing: everything that shapes what the
+// recipient would actually receive. Two jobs with the same key are
+// indistinguishable on the wire — a second in-flight copy adds nothing.
+// The message is hashed (storm lines can be long); kind/owner/trigger-id are
+// included so signals of different triggers never merge (log attribution).
+function dedupKey(
+  kind: SignalKind,
+  owner: string,
+  metaId: unknown,
+  target: string,
+  topic: string | undefined,
+  message: string,
+): string {
+  const hash = createHash('sha256').update(message).digest('hex')
+  return `${kind}|${owner}|${typeof metaId === 'string' ? metaId : ''}|${target}|${topic ?? ''}|${hash}`
+}
+
+function entryKey(entry: SpoolEntry): string {
+  return dedupKey(entry.kind, entry.owner, entry.meta?.id, entry.target, entry.topic, entry.message)
+}
+
+// One in-flight signal: the live entry (shared with runChain, which mutates
+// attempts/coalesced), the dedup key, the cancel latch, and the chain promise
+// (returned to a coalesced deliver() so callers can await the real outcome).
+interface InflightRec {
+  entry: SpoolEntry
+  key: string
+  cancelled: boolean
+  promise: Promise<void>
 }
 
 // Per-target delivery lane: at most ONE in-flight `iapeer send` per recipient.
@@ -257,6 +303,9 @@ export class Escalator {
   private readonly backstop: string
   private readonly lanes = new Lanes()
   private readonly makeId: () => string
+  // In-flight index by dedup key — the coalescing seam. An entry lives here
+  // from deliver()/start() until its chain settles (delivered/lost/cancelled).
+  private readonly inflight = new Map<string, InflightRec>()
 
   constructor(deps: EscalatorDeps, opts: EscalatorOpts = {}) {
     this.deps = deps
@@ -270,16 +319,36 @@ export class Escalator {
   // Re-drain: re-run the chain for every pending spool entry (signals that were
   // in flight when the previous process died). Attempt history is preserved and
   // appended to. Call once at process start, before the engines begin firing.
+  //
+  // Byte-identical duplicates among the pending set are MERGED before the
+  // chains launch (first entry runs, the rest fold into its coalesced counter
+  // and leave the spool) — without this, a restart right after a storm would
+  // re-detonate the whole storm from disk.
   start(): void {
     const pending = this.deps.spool.loadPending()
     for (const entry of pending) {
+      const key = entryKey(entry)
+      const existing = this.inflight.get(key)
+      if (existing) {
+        existing.entry.coalesced = (existing.entry.coalesced ?? 0) + 1 + (entry.coalesced ?? 0)
+        this.deps.spool.update(existing.entry)
+        this.deps.spool.remove(entry.id)
+        this.deps.log('spool-merge', {
+          sig: entry.id,
+          into: existing.entry.id,
+          kind: entry.kind,
+          intendedTarget: entry.target,
+          coalesced: existing.entry.coalesced,
+        })
+        continue
+      }
       this.deps.log('spool-redrain', {
         sig: entry.id,
         kind: entry.kind,
         intendedTarget: entry.target,
         attemptsSoFar: entry.attempts.length,
       })
-      void this.runChain(entry)
+      this.launch(entry, key)
     }
   }
 
@@ -287,7 +356,27 @@ export class Escalator {
   // the chain settles (delivered or lost) — production callers fire-and-forget
   // (`void escalator.deliver(...)`), tests await it. NEVER rejects: every
   // failure path is a log event + spool state, not an exception.
+  //
+  // Coalescing: a job byte-identical to a signal still in flight starts NO new
+  // chain — it bumps the in-flight entry's counter and returns that entry's
+  // chain promise. At-least-once holds: the one in-flight copy either reaches
+  // someone in the chain or dead-letters loudly; a second identical copy could
+  // add nothing but noise (the 2026-07-17 storm hammered the fallback with
+  // hundreds of copies of one line).
   deliver(job: EscalationJob): Promise<void> {
+    const key = dedupKey(job.kind, job.owner, job.meta?.id, job.target, job.topic, job.message)
+    const existing = this.inflight.get(key)
+    if (existing && !existing.cancelled) {
+      existing.entry.coalesced = (existing.entry.coalesced ?? 0) + 1
+      this.deps.spool.update(existing.entry)
+      this.deps.log('signal-coalesced', {
+        sig: existing.entry.id,
+        kind: job.kind,
+        intendedTarget: job.target,
+        coalesced: existing.entry.coalesced,
+      })
+      return existing.promise
+    }
     const entry: SpoolEntry = {
       v: 1,
       id: this.makeId(),
@@ -303,16 +392,52 @@ export class Escalator {
       ...(job.meta ? { meta: job.meta } : {}),
     }
     this.deps.spool.put(entry)
-    return this.runChain(entry)
+    return this.launch(entry, key)
   }
 
-  private async runChain(entry: SpoolEntry): Promise<void> {
+  // Cancel every in-flight signal matching `pred` (flood-breaker seam — the
+  // supervisor cancels a flooding watcher's queued forwards). Cancelled entries
+  // become durable dead-letters (status "flooded"): the file stays on disk, is
+  // never re-drained, and the count is returned for the breaker's owner alert.
+  // A signal whose send is already on the wire may still land — at-least-once
+  // semantics tolerate that; the latch stops every subsequent attempt.
+  cancelPending(pred: (entry: Readonly<SpoolEntry>) => boolean): number {
+    let count = 0
+    for (const rec of this.inflight.values()) {
+      if (rec.cancelled || rec.entry.status !== 'pending') continue
+      if (!pred(rec.entry)) continue
+      rec.cancelled = true
+      rec.entry.status = 'flooded'
+      this.deps.spool.update(rec.entry)
+      count++
+    }
+    if (count > 0) this.deps.log('escalation-cancelled', { count })
+    return count
+  }
+
+  // Register the in-flight record and start the chain. The record leaves the
+  // index when the chain settles — however it settles.
+  private launch(entry: SpoolEntry, key: string): Promise<void> {
+    const rec: InflightRec = { entry, key, cancelled: false, promise: Promise.resolve() }
+    rec.promise = this.runChain(rec).finally(() => {
+      if (this.inflight.get(key) === rec) this.inflight.delete(key)
+    })
+    this.inflight.set(key, rec)
+    return rec.promise
+  }
+
+  private async runChain(rec: InflightRec): Promise<void> {
+    const entry = rec.entry
     try {
       for (let li = 0; li < entry.chain.length; li++) {
         const to = entry.chain[li]!
         const isPrimary = li === 0
         const message = isPrimary ? entry.message : wrapForFallback(entry, li)
         for (let attempt = 1; attempt <= this.attemptsPerLink; attempt++) {
+          // Flood-breaker latch: checked before every attempt (and implicitly
+          // after every sleep/lane wait). The entry is already a "flooded"
+          // dead-letter — just stop the chain.
+          if (rec.cancelled) return
           this.deps.log('deliver-attempt', {
             sig: entry.id,
             kind: entry.kind,
@@ -322,12 +447,17 @@ export class Escalator {
             ...(isPrimary ? {} : { intendedTarget: entry.target }),
           })
           const result = await this.lanes.run(to, () =>
-            this.deps.transport.send({
-              target: to,
-              message,
-              ...(entry.topic ? { topic: entry.topic } : {}),
-            }),
+            // The cancel latch may flip while this send waits in the lane queue —
+            // short-circuit instead of firing a doomed/unwanted attempt.
+            rec.cancelled
+              ? Promise.resolve<SendResult>({ ok: false, error: 'cancelled by flood breaker' })
+              : this.deps.transport.send({
+                  target: to,
+                  message,
+                  ...(entry.topic ? { topic: entry.topic } : {}),
+                }),
           )
+          if (rec.cancelled) return
           if (result.ok) {
             // len = correlation handle against the iapeer delivery log (0.1.3
             // attribution contract) — the length of what was ACTUALLY sent
@@ -337,6 +467,7 @@ export class Escalator {
               target: to,
               len: message.length,
               sig: entry.id,
+              ...(entry.coalesced ? { coalesced: entry.coalesced } : {}),
               ...(isPrimary ? {} : { via: 'fallback', intendedTarget: entry.target, link: li + 1 }),
             })
             this.deps.spool.remove(entry.id)

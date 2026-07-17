@@ -74,6 +74,11 @@ interface Harness {
   transport: DeliverRecorder
   clock: FakeClock
   logs: Array<{ evt: string; fields?: Record<string, unknown> }>
+  // Every cancelForwards(watcherId) call the flood breaker made. The stub
+  // returns `cancelResult` (default 0) — escalation-side cancel semantics live
+  // in escalation.test.ts.
+  cancelCalls: string[]
+  setCancelResult: (n: number) => void
 }
 
 function harness(triggers: EventTrigger[], opts: SupervisorOpts = {}): Harness {
@@ -81,15 +86,31 @@ function harness(triggers: EventTrigger[], opts: SupervisorOpts = {}): Harness {
   const transport = new DeliverRecorder()
   const clock = new FakeClock()
   const logs: Harness['logs'] = []
+  const cancelCalls: string[] = []
+  let cancelResult = 0
   const deps: SupervisorDeps = {
     now: clock.now,
     deliver: job => transport.jobs.push(job),
+    cancelForwards: watcherId => {
+      cancelCalls.push(watcherId)
+      return cancelResult
+    },
     processSource: source,
     log: (evt, fields) => logs.push({ evt, fields }),
     setTimer: clock.setTimer,
   }
   const supervisor = new Supervisor(triggers, deps, opts)
-  return { supervisor, source, transport, clock, logs }
+  return {
+    supervisor,
+    source,
+    transport,
+    clock,
+    logs,
+    cancelCalls,
+    setCancelResult: n => {
+      cancelResult = n
+    },
+  }
 }
 
 function evt(over: Partial<EventTrigger> = {}): EventTrigger {
@@ -135,16 +156,96 @@ describe('Supervisor — forwarding', () => {
     expect(h.logs.some(l => l.evt === 'watcher-stderr')).toBe(true)
   })
 
-  test('flood-seam is invoked once per forwarded line (no throttling)', () => {
-    // The seam is private + a no-op here; we assert it does not interfere —
-    // every non-blank line is forwarded (the seam never drops one) and blanks are
-    // never forwarded (the seam is not even reached for them).
-    const h = harness([evt()])
+  test('lines below the flood threshold forward without interference', () => {
+    const h = harness([evt()], { floodThreshold: 30, floodWindowMs: 10_000 })
     h.supervisor.start()
     const proc = h.source.current!
     for (let i = 0; i < 10; i++) proc.emitStdout(`line${i}\n`)
     proc.emitStdout('\n')
     expect(h.transport.sent.length).toBe(10)
+    expect(h.logs.some(l => l.evt === 'watcher-flood')).toBe(false)
+  })
+})
+
+describe('Supervisor — flood breaker (escalation-storm incident 2026-07-17)', () => {
+  test('threshold within window trips: stop + cancel + ONE alert; tripping line not forwarded', () => {
+    const h = harness([evt({ id: 'delivery-fail-watch', owner: 'doc', target: 'doc' })], {
+      floodThreshold: 5,
+      floodWindowMs: 10_000,
+    })
+    h.setCancelResult(3)
+    h.supervisor.start()
+    const proc = h.source.current!
+    // 4 lines forward normally (below threshold)…
+    for (let i = 0; i < 4; i++) proc.emitStdout(`fail${i}\n`)
+    expect(h.transport.sent.length).toBe(4)
+    // …the 5th reaches the threshold → trip INSTEAD of forward.
+    proc.emitStdout('fail4\n')
+    const flood = h.logs.filter(l => l.evt === 'watcher-flood')
+    expect(flood.length).toBe(1)
+    expect(flood[0]!.fields).toMatchObject({
+      id: 'doc:delivery-fail-watch',
+      lines: 5,
+      cancelled: 3,
+      owner: 'doc',
+    })
+    // The queued forwards of THIS watcher were cancelled in the escalator.
+    expect(h.cancelCalls).toEqual(['doc:delivery-fail-watch'])
+    // Exactly one owner alert, carrying both counts; the 5th line itself was
+    // NOT forwarded (it is storm, not signal).
+    expect(h.transport.alerts.length).toBe(1)
+    expect(h.transport.alerts[0]!.target).toBe('doc')
+    expect(h.transport.alerts[0]!.message).toContain('FLOODING')
+    expect(h.transport.alerts[0]!.message).toContain('3 queued')
+    expect(h.transport.sent.filter(s => s.message.startsWith('fail')).length).toBe(4)
+    // The child was killed.
+    expect(proc.kills.length).toBe(1)
+  })
+
+  test('after the trip: no restart, later lines ignored, no second alert', () => {
+    const h = harness([evt()], { floodThreshold: 3, floodWindowMs: 10_000 })
+    h.supervisor.start()
+    const proc = h.source.current!
+    for (let i = 0; i < 3; i++) proc.emitStdout(`x${i}\n`)
+    expect(h.logs.filter(l => l.evt === 'watcher-flood').length).toBe(1)
+    // Lines from the not-yet-dead child are ignored (circuit latched).
+    proc.emitStdout('straggler\n')
+    expect(h.transport.sent.some(s => s.message === 'straggler')).toBe(false)
+    // The killed child's exit does NOT respawn (breaker, not crashloop).
+    proc.emitExit(null, 'SIGKILL')
+    h.clock.advance(120_000)
+    expect(h.source.spawned.length).toBe(1)
+    // Still exactly one alert.
+    expect(h.transport.alerts.length).toBe(1)
+  })
+
+  test('slow line flow (spaced past the window) never trips', () => {
+    const h = harness([evt()], { floodThreshold: 3, floodWindowMs: 10_000 })
+    h.supervisor.start()
+    const proc = h.source.current!
+    for (let i = 0; i < 20; i++) {
+      proc.emitStdout(`slow${i}\n`)
+      h.clock.advance(6000) // 2 lines per window — always below threshold 3
+    }
+    expect(h.transport.sent.length).toBe(20)
+    expect(h.logs.some(l => l.evt === 'watcher-flood')).toBe(false)
+  })
+
+  test('re-register (same-id replace) resets the breaker: fresh watcher forwards again', () => {
+    const trig = evt({ id: 'w1', script: 'tail -F /tmp/a' })
+    const h = harness([trig], { floodThreshold: 2, floodWindowMs: 10_000 })
+    h.supervisor.start()
+    const proc = h.source.current!
+    proc.emitStdout('a\n')
+    proc.emitStdout('b\n') // trips (threshold 2)
+    expect(h.logs.filter(l => l.evt === 'watcher-flood').length).toBe(1)
+    proc.emitExit(null, 'SIGKILL')
+    // Replace with a changed config (new script) under the same key → fresh
+    // Watcher with a closed breaker.
+    h.supervisor.reload([{ ...trig, script: 'tail -F /tmp/b' }])
+    expect(h.source.spawned.length).toBe(2)
+    h.source.current!.emitStdout('recovered\n')
+    expect(h.transport.sent.some(s => s.message === 'recovered')).toBe(true)
   })
 })
 

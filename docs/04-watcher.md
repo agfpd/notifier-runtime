@@ -36,6 +36,10 @@ A spawn failure (the command doesn't exist, isn't executable) is handled like an
 
 A hard-broken script — a typo on line one that exits instantly — would otherwise respawn forever. The breaker stops that: **5 failures within 60 seconds** trips it. When it trips, the watcher stops restarting, sends an alert to **you** (the trigger's owner), and logs loudly. The alert tells you which watcher gave up and why, so a broken monitor surfaces instead of churning in the background.
 
+## Flood breaker
+
+The mirror-image failure: a script that produces *too much*. **30 lines within 10 seconds** trips it — a rate that dense is a feedback loop (e.g. a watcher tailing a log that its own deliveries write into) or a broken source, not an alarm feed. When it trips, the watcher is stopped like a crashloop trip (killed, no restart until you re-register it or the daemon restarts), its queued undelivered lines are cancelled as dead-letters, and you get one alert with both counts. See [06 — Escalation](06-escalation.md#storm-protection).
+
 ## Hang detection: `heartbeatSec`
 
 Set `heartbeatSec` to catch a watcher that's alive but stuck — the process is up but has stopped producing output:

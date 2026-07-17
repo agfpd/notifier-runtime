@@ -139,6 +139,10 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
     deliver: job => {
       void escalator.deliver(job)
     },
+    // Flood breaker → escalator: cancel the flooding watcher's queued forwards
+    // (matched by the trigger key stamped into meta.id by the forward path).
+    cancelForwards: watcherId =>
+      escalator.cancelPending(e => e.kind === 'forward' && e.meta?.id === watcherId),
     processSource: nodeProcessSource(),
     log,
     // Real timer for backoff + heartbeat; cancel clears it.

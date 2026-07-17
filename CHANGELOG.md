@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-17
+
+Storm-proof escalation. Live incident 2026-07-17 17:40–17:45Z: a watcher
+tailing the iapeer delivery log for failure lines, targeting a peer that was
+itself undeliverable (stopped), looped on its own failed deliveries — every
+failed attempt wrote a new failure line into the tailed log (gain 2), the
+per-target lane saturated at ~9 signals/s, the spool accumulated 460+ entries
+in ~2 minutes, and the fallback recipient was hammered with ~400 near-identical
+escalations. The 0.2.0 per-signal retry delay (30s) could not help: it spaces
+the attempts of ONE signal, while a storm is many signals back-to-back.
+
+### Added
+
+- **Per-watcher flood breaker** (content-agnostic — storm lines usually differ
+  in timestamps, so only the line RATE identifies a feedback loop): reaching
+  30 forwarded lines inside a sliding 10s window trips the breaker — the
+  watcher is stopped like a crashloop trip (child killed, no restart until
+  re-register or daemon restart), its queued undelivered forwards are cancelled
+  in the spool, and ONE escalating owner alert reports both counts. The tripping
+  line itself is not forwarded (it is storm, not signal).
+- **In-flight coalescing**: a signal byte-identical to one still in flight
+  (same kind/owner/trigger/target/topic/message) starts no second chain — it
+  bumps the in-flight entry's `coalesced` counter behind a `signal-coalesced`
+  log line. Success logs and fallback wrappers carry the counter, so the
+  recipient/operator sees the storm size. Once the chain settles, the same body
+  is a fresh legitimate signal again.
+- **Re-drain merge**: byte-identical pending duplicates in the spool are merged
+  at start() (first runs, the rest fold into its counter and leave the spool) —
+  a restart right after a storm no longer re-detonates it from disk.
+- Spool status `"flooded"`: breaker-cancelled signals become durable
+  dead-letters — never re-drained, never silently dropped (loud
+  `escalation-cancelled` log + the file stays for the operator).
+
+### Changed
+
+- The `floodObserve` no-op seam in the Supervisor is replaced by the real flood
+  breaker (the spec change the seam was reserved for). `SupervisorDeps` gains
+  `cancelForwards(watcherId)` — the breaker's cancel seam into the Escalator's
+  new `cancelPending(predicate)`.
+
 ## [0.3.6] - 2026-07-14
 
 ### Fixed

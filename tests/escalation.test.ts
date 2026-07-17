@@ -339,6 +339,133 @@ describe('Escalator — re-drain (write-ahead spool survives restarts)', () => {
     expect(h.transport.calls.length).toBe(0)
     expect(h.spool.entries.size).toBe(1)
   })
+
+  test('a flood-cancelled dead-letter (status flooded) is NOT re-drained', async () => {
+    const h = harness()
+    h.spool.put(strandedEntry({ status: 'flooded' }))
+    h.escalator.start()
+    await flush()
+    expect(h.transport.calls.length).toBe(0)
+    expect(h.spool.entries.size).toBe(1)
+  })
+
+  test('byte-identical pending duplicates MERGE on re-drain: one chain, summed counter', async () => {
+    // A restart right after a storm must not re-detonate the storm from disk.
+    const h = harness()
+    h.spool.put(strandedEntry({ id: 'dup-1' }))
+    h.spool.put(strandedEntry({ id: 'dup-2' }))
+    h.spool.put(strandedEntry({ id: 'dup-3', coalesced: 2 }))
+    h.escalator.start()
+    await flush()
+    // Exactly ONE chain ran (one send to the primary target).
+    expect(h.transport.callsTo('linus').length).toBe(1)
+    // Duplicates were merged loudly: 1 (dup-2) + 1+2 (dup-3 with its own count).
+    expect(h.logs.filter(l => l.evt === 'spool-merge').length).toBe(2)
+    expect(h.logs.some(l => l.evt === 'spool-merge' && l.fields?.coalesced === 4)).toBe(true)
+    // Delivered → spool fully drained (merged files removed, survivor removed).
+    expect(h.spool.entries.size).toBe(0)
+  })
+})
+
+describe('Escalator — storm-proofing (escalation-storm incident 2026-07-17)', () => {
+  test('an in-flight byte-identical job coalesces: no second chain, counter + log', async () => {
+    const h = harness()
+    // Target's first attempt fails → the signal parks in the 30s retry sleep.
+    h.transport.plan('linus', FAIL('stopped'), { ok: true })
+    const p1 = h.escalator.deliver(job())
+    await flush()
+    expect(h.transport.callsTo('linus').length).toBe(1)
+    // Two byte-identical copies arrive while it is in flight.
+    const p2 = h.escalator.deliver(job())
+    const p3 = h.escalator.deliver(job())
+    await flush()
+    // No new chain: still one spool entry, no extra sends.
+    expect(h.spool.entries.size).toBe(1)
+    expect(h.transport.callsTo('linus').length).toBe(1)
+    expect([...h.spool.entries.values()][0]!.coalesced).toBe(2)
+    expect(h.logs.filter(l => l.evt === 'signal-coalesced').length).toBe(2)
+    // The retry delivers; every deliver() promise settles with the one chain.
+    h.clock.advance(30_000)
+    await flush()
+    await Promise.all([p1, p2, p3])
+    expect(h.spool.entries.size).toBe(0)
+    // Success log carries the coalesced count (operator sees the storm size).
+    expect(h.logs.some(l => l.evt === 'forwarded' && l.fields?.coalesced === 2)).toBe(true)
+  })
+
+  test('a DIFFERENT message (storm lines differ by timestamp) does NOT coalesce', async () => {
+    const h = harness()
+    h.transport.plan('linus', FAIL('stopped'), FAIL('stopped'))
+    void h.escalator.deliver(job({ message: 'ts=1 fail' }))
+    void h.escalator.deliver(job({ message: 'ts=2 fail' }))
+    await flush()
+    expect(h.spool.entries.size).toBe(2)
+    expect(h.logs.some(l => l.evt === 'signal-coalesced')).toBe(false)
+  })
+
+  test('after the chain settles, an identical job starts a FRESH chain (no permanent dedup)', async () => {
+    const h = harness()
+    await h.escalator.deliver(job())
+    await flush()
+    expect(h.transport.callsTo('linus').length).toBe(1)
+    await h.escalator.deliver(job())
+    await flush()
+    // Same body again AFTER delivery → a new legitimate signal.
+    expect(h.transport.callsTo('linus').length).toBe(2)
+    expect(h.logs.some(l => l.evt === 'signal-coalesced')).toBe(false)
+  })
+
+  test('same body from DIFFERENT triggers never merges (log attribution preserved)', async () => {
+    const h = harness()
+    h.transport.plan('linus', FAIL('stopped'), FAIL('stopped'))
+    void h.escalator.deliver(job({ meta: { id: 'doc:w1' } }))
+    void h.escalator.deliver(job({ meta: { id: 'doc:w2' } }))
+    await flush()
+    expect(h.spool.entries.size).toBe(2)
+  })
+
+  test('cancelPending: matching in-flight signals become "flooded" dead-letters and stop cold', async () => {
+    const h = harness()
+    // Both signals fail the first attempt → both park in the 30s retry sleep.
+    h.transport.plan('linus', FAIL('stopped'), FAIL('stopped'))
+    const p1 = h.escalator.deliver(job({ message: 'line A', meta: { id: 'doc:w1' } }))
+    const p2 = h.escalator.deliver(job({ message: 'line B', meta: { id: 'doc:w1' } }))
+    // A signal of ANOTHER watcher also in flight — must survive the cancel.
+    h.transport.plan('mrbooker', FAIL('stopped'), { ok: true })
+    const p3 = h.escalator.deliver(
+      job({ target: 'mrbooker', message: 'other', meta: { id: 'boris:w9' } }),
+    )
+    await flush()
+    const n = h.escalator.cancelPending(e => e.kind === 'forward' && e.meta?.id === 'doc:w1')
+    expect(n).toBe(2)
+    expect(h.logs.some(l => l.evt === 'escalation-cancelled' && l.fields?.count === 2)).toBe(true)
+    // The cancelled entries are durable dead-letters, and their chains fire NO
+    // further sends even after the retry delay elapses.
+    const before = h.transport.callsTo('linus').length
+    h.clock.advance(120_000)
+    await flush()
+    await Promise.all([p1, p2])
+    expect(h.transport.callsTo('linus').length).toBe(before)
+    const statuses = [...h.spool.entries.values()].map(e => e.status).sort()
+    expect(statuses.filter(s => s === 'flooded').length).toBe(2)
+    // The other watcher's signal continued its chain and delivered.
+    await p3
+    expect(h.spool.entries.size).toBe(2) // only the two flooded dead-letters remain
+    // No delivery-lost for the cancelled ones — they were cancelled, not exhausted.
+    expect(h.logs.some(l => l.evt === 'delivery-lost')).toBe(false)
+  })
+
+  test('a job identical to a CANCELLED in-flight entry starts a fresh chain', async () => {
+    const h = harness()
+    h.transport.plan('linus', FAIL('stopped'))
+    void h.escalator.deliver(job())
+    await flush()
+    h.escalator.cancelPending(() => true)
+    // The flooded entry no longer coalesces new identical signals.
+    h.transport.plan('linus', { ok: true })
+    await h.escalator.deliver(job())
+    expect(h.logs.filter(l => l.evt === 'forwarded').length).toBe(1)
+  })
 })
 
 describe('wrapForFallback', () => {
@@ -363,6 +490,12 @@ describe('wrapForFallback', () => {
     expect(msg).toContain('linus×2 (last error: second error)')
     expect(msg).toContain('relay it to "linus"')
     expect(msg.endsWith('MINER DOWN')).toBe(true)
+    // No coalesced counter → no duplicate note.
+    expect(msg).not.toContain('coalesced')
+    // With a counter the fallback recipient sees the storm size.
+    expect(wrapForFallback({ ...entry, coalesced: 41 }, 1)).toContain(
+      '41 byte-identical duplicate signal(s)',
+    )
   })
 })
 

@@ -87,6 +87,30 @@ export const ESCALATION_RETRY_DELAY_MS = 30_000
 // wake-on-miss legitimately takes tens of seconds.
 export const SEND_TIMEOUT_MS = 120_000
 
+// --- Flood breaker (per-watcher line-rate circuit) --------------------------
+//
+// Live incident 2026-07-17 (self-amplifying escalation storm): a watcher
+// forwarding delivery-failure log lines to an UNDELIVERABLE target looped on
+// itself — every failed delivery attempt wrote a new failure line into the very
+// log the watcher tails (gain 2: one signal → two failed attempts → two new
+// lines), saturating the per-target lane at ~9 signals/s and hammering the
+// fallback recipient with hundreds of near-identical escalations. The per-signal
+// retry delay (ESCALATION_RETRY_DELAY_MS) cannot prevent this: it spaces the
+// attempts of ONE signal, while a storm is many signals back-to-back.
+//
+// The breaker is content-agnostic by design: storm lines typically differ in
+// timestamps, so body-dedup alone cannot catch them — only the RATE identifies
+// a feedback loop. Tripping stops the watcher like a crashloop trip (no
+// restart until re-register/daemon restart), cancels its queued undelivered
+// forwards (spool status "flooded" — durable dead-letters, never silently
+// dropped), and sends ONE escalating owner alert.
+//
+// Threshold: 30 lines inside a sliding 10s window. A legitimate `tail -F`
+// startup burst (~10 lines) stays far below it; a sustained 3 lines/s stream is
+// a data channel, not an alarm feed — the EVENT role's contract is signals.
+export const FLOOD_THRESHOLD = 30
+export const FLOOD_WINDOW_MS = 10_000
+
 // Global backstop — an optional terminal link appended to EVERY escalation chain
 // AFTER the trigger owner. Empty by default: the owner is the terminal link, so a
 // fresh install needs no team-specific configuration. Set NOTIFIER_FALLBACK_TARGET

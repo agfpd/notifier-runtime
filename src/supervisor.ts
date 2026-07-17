@@ -3,6 +3,8 @@ import {
   BACKOFF_START_MS,
   CRASHLOOP_THRESHOLD,
   CRASHLOOP_WINDOW_MS,
+  FLOOD_THRESHOLD,
+  FLOOD_WINDOW_MS,
   HEALTHY_RUN_MS,
 } from './constants.ts'
 import type { EscalationJob } from './escalation.ts'
@@ -16,6 +18,10 @@ export interface SupervisorDeps {
   // there, asynchronously. A send-failure is never terminal here (a
   // watcher-detected alarm once died as one send-error line).
   deliver: (job: EscalationJob) => void
+  // Flood-breaker seam into the Escalator: cancel every queued undelivered
+  // forward of one watcher (matched by meta.id === watcher key). Returns the
+  // number of signals cancelled — reported in the breaker's owner alert.
+  cancelForwards: (watcherId: string) => number
   processSource: ProcessSource
   log: (evt: string, fields?: Record<string, unknown>) => void
   // Injectable timer for backoff + heartbeat. Returns a cancel fn. In production
@@ -30,6 +36,8 @@ export interface SupervisorOpts {
   crashloopThreshold?: number
   crashloopWindowMs?: number
   healthyRunMs?: number
+  floodThreshold?: number
+  floodWindowMs?: number
 }
 
 // Reload diff key: a watcher's identity within the running set is owner:id.
@@ -83,8 +91,14 @@ class Watcher {
   // Set once stop() runs: an exit MUST NOT trigger a restart (no zombie respawn
   // after graceful shutdown), and the breaker is irrelevant.
   private stopped = false
-  // Set once the breaker trips: we never restart again and never alert twice.
+  // Set once a breaker trips (crashloop OR flood): we never restart again and
+  // never alert twice. Cleared only by a re-register/replace or daemon restart.
   private circuitOpen = false
+  // Timestamps (ms) of recently forwarded lines within the flood window —
+  // the line-rate breaker's sliding window (2026-07-17 escalation-storm
+  // incident: a self-amplifying feedback loop shows up as line RATE, not as
+  // process death, so the crashloop breaker never sees it).
+  private lineTimes: number[] = []
 
   constructor(
     private readonly id: string,
@@ -93,8 +107,6 @@ class Watcher {
     readonly trigger: EventTrigger,
     private readonly deps: SupervisorDeps,
     private readonly cfg: Required<SupervisorOpts>,
-    // Flood-guard SEAM — see Supervisor.floodObserve. Called once per forwarded line.
-    private readonly floodObserve: (id: string) => void,
   ) {}
 
   start(): void {
@@ -139,6 +151,9 @@ class Watcher {
     // Blank-line skip happens HERE (forward layer), not in the source: a verbatim
     // empty stdout line is noise, never a signal.
     if (line.length === 0) return
+    // A tripped breaker (flood or crashloop) stops the forward path outright —
+    // lines from a child that has not died yet are part of the storm.
+    if (this.circuitOpen) return
 
     // A forwarded line is the clearest health signal → reset backoff/streak now,
     // not only on exit.
@@ -147,10 +162,17 @@ class Watcher {
     // Each forwarded line resets the hang watchdog.
     this.armHeartbeat()
 
-    // Flood-guard SEAM: a future rate-limiter / auto-stop hook
-    // observes every forwarded line. No throttling here — verbatim forward is the
-    // author's responsibility for the EVENT role.
-    this.floodObserve(this.id)
+    // Flood breaker: count this line into the sliding window; reaching the
+    // threshold trips the breaker INSTEAD of forwarding — the tripping line is
+    // already storm, not signal.
+    const now = this.deps.now()
+    this.lineTimes.push(now)
+    const windowStart = now - this.cfg.floodWindowMs
+    this.lineTimes = this.lineTimes.filter(t => t >= windowStart)
+    if (this.lineTimes.length >= this.cfg.floodThreshold) {
+      this.openFloodBreaker()
+      return
+    }
 
     // Hand off to the Escalator (async — the forward path never blocks on a
     // wake). Outcome logging lives there: `forwarded` (with len — the 0.1.3
@@ -259,6 +281,41 @@ class Watcher {
     })
   }
 
+  // Flood breaker tripped: the line RATE identifies a feedback loop or a
+  // broken source (live incident 2026-07-17: a watcher tailing the delivery
+  // log looped on its own failed deliveries at ~9 lines/s, hammering the
+  // fallback recipient with hundreds of copies). Content-agnostic by design —
+  // storm lines usually differ in timestamps, so only the rate catches them.
+  // Trip = kill the child, latch the circuit (no restart), cancel the queued
+  // undelivered forwards of THIS watcher in the spool (they become "flooded"
+  // dead-letters), and send ONE escalating owner alert carrying both counts.
+  private openFloodBreaker(): void {
+    this.circuitOpen = true
+    this.clearHeartbeat()
+    const cancelled = this.deps.cancelForwards(this.id)
+    this.deps.log('watcher-flood', {
+      id: this.id,
+      lines: this.lineTimes.length,
+      windowMs: this.cfg.floodWindowMs,
+      cancelled,
+      owner: this.trigger.owner,
+    })
+    this.deps.deliver({
+      kind: 'alert',
+      target: this.trigger.owner,
+      message:
+        `notifier-watcher: watcher "${this.id}" (script: ${this.trigger.script}) is FLOODING — ` +
+        `${this.lineTimes.length} lines within ${Math.round(this.cfg.floodWindowMs / 1000)}s ` +
+        `(threshold ${this.cfg.floodThreshold}). Watcher STOPPED (no restart); ${cancelled} queued ` +
+        `undelivered forward(s) cancelled as dead-letters (spool status "flooded"). A flood this ` +
+        `dense is a feedback loop or a broken source — fix the source, then re-register the watcher.`,
+      ...(this.trigger.fallback ? { fallbacks: this.trigger.fallback } : {}),
+      owner: this.trigger.owner,
+      meta: { id: this.id },
+    })
+    if (this.handle) this.handle.kill('SIGKILL')
+  }
+
   // --- heartbeat watchdog --------------------------------------------------
 
   // (Re)arm the per-watcher hang watchdog if heartbeatSec is declared. Firing
@@ -329,12 +386,14 @@ export class Supervisor {
       crashloopThreshold: opts.crashloopThreshold ?? CRASHLOOP_THRESHOLD,
       crashloopWindowMs: opts.crashloopWindowMs ?? CRASHLOOP_WINDOW_MS,
       healthyRunMs: opts.healthyRunMs ?? HEALTHY_RUN_MS,
+      floodThreshold: opts.floodThreshold ?? FLOOD_THRESHOLD,
+      floodWindowMs: opts.floodWindowMs ?? FLOOD_WINDOW_MS,
     }
     for (const trigger of triggers) {
       const key = watcherKey(trigger)
       // De-dupe a duplicate owner:id in the initial set (last wins) so the map
       // never holds two watchers for the same key.
-      this.watchers.set(key, new Watcher(key, trigger, this.deps, this.cfg, wid => this.floodObserve(wid)))
+      this.watchers.set(key, new Watcher(key, trigger, this.deps, this.cfg))
     }
   }
 
@@ -388,7 +447,7 @@ export class Supervisor {
         existing.stop()
         replaced++
       }
-      const watcher = new Watcher(key, trigger, this.deps, this.cfg, wid => this.floodObserve(wid))
+      const watcher = new Watcher(key, trigger, this.deps, this.cfg)
       this.watchers.set(key, watcher)
       // If the supervisor is already running, a freshly-added/replaced watcher
       // starts immediately (a sleeping requester's just-registered watcher fires
@@ -404,14 +463,5 @@ export class Supervisor {
   // Watcher latches `stopped` so onExit returns early.
   stop(): void {
     for (const w of this.watchers.values()) w.stop()
-  }
-
-  // Flood-guard SEAM. Future work (per Claude Code Monitor's
-  // auto-stop) will track per-watcher line rate here and STOP a watcher that
-  // floods (>N lines/sec). Intentionally a NO-OP for now: verbatim forward is the
-  // author's responsibility now. DO NOT add throttling here without a spec
-  // change — this is only the extension point.
-  private floodObserve(_id: string): void {
-    /* no-op extension point — see comment above */
   }
 }

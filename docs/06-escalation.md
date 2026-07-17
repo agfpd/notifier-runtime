@@ -40,6 +40,13 @@ If `ops` can't be reached after retries, the heartbeat goes to `oncall`, then ba
 
 If every link is exhausted, the signal becomes a loud `delivery-lost` and is written to a durable **dead-letter file**. It is not retried again automatically — but it stays on disk for an operator to find. Nothing is dropped silently.
 
+## Storm protection
+
+At-least-once must not turn a delivery failure into a signal *generator*. Two mechanisms keep a storm from feeding on itself:
+
+- **Coalescing.** A signal byte-identical to one still in flight (same kind, trigger, target, topic, and message) does not start a second chain — it folds onto the in-flight signal as a counter. The delivered message and the logs carry the count, so the recipient sees "this arrived, plus N identical copies while it was queued" instead of N separate messages. Once the chain settles, the same body counts as a fresh signal again. The same merge runs over the spool at startup, so a restart right after a storm doesn't re-detonate it from disk.
+- **Watcher flood breaker.** A watcher forwarding **30 lines within 10 seconds** is a feedback loop or a broken source, not an alarm feed. The breaker stops the watcher (like a crashloop trip — no restart until it's re-registered or the daemon restarts), cancels its queued undelivered forwards, and sends the owner **one** escalating alert with both counts. Cancelled signals become dead-letter files with status `flooded` — preserved on disk, never re-sent. The breaker is deliberately rate-based, not content-based: storm lines usually differ (timestamps), so only the rate identifies them.
+
 ## Surviving a restart: the write-ahead spool
 
 A signal is written to a durable spool *before* delivery is attempted, so a crash or a restart mid-chain can't strand it. Each peer has its own spool directory:
