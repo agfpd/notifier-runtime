@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-06
+
+### Fixed
+
+- macOS self-install now strictly verifies the staged executable with
+  `/usr/bin/codesign --verify --deep --strict` before replacing the installed
+  binary or writing its manifest, on both compile and copy-self paths. A valid
+  signature is preserved; invalid/unsigned code is repaired with
+  `--force --sign -` and must pass a second strict verification. Failed repair,
+  verification, or command execution aborts with the old binary and manifest
+  untouched. Temporary output is removed instead of renamed to `.dead`.
+- Signature commands are bounded to 30 seconds and use the absolute system
+  codesign path. Install output reports `valid`, `repaired`, or `skipped`.
+
+### Added
+
+- Sandbox tests for real compile/execute and compiled CLI copy-self, strict
+  signature preservation, post-sign corruption rejection, and mock failure/order
+  cases (including timeout, signal, launch error, and unsuccessful reverify).
+
 ## [0.4.0] - 2026-07-17
 
 Storm-proof escalation. Live incident 2026-07-17 17:40–17:45Z: a watcher

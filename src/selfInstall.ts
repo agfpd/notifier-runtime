@@ -17,13 +17,17 @@
 // proof sets IAPEER_BIN_DIR so a test never pollutes the real ~/.local/bin.
 
 import { spawnSync } from 'child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, renameSync, statSync } from 'fs'
+import { randomUUID } from 'crypto'
+import { chmodSync, copyFileSync, mkdirSync, renameSync, rmSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import pkg from '../package.json'
 import { RUNTIME } from './constants.ts'
 import { scaffoldHostDocs, type ScaffoldDocsResult } from './hostDocs.ts'
-import { buildManifest, resolveIapeerRoot, runtimeManifestPath, writeManifestAtomic } from './manifest.ts'
+import { buildManifest, resolveIapeerRoot, writeManifestAtomic } from './manifest.ts'
+import {
+  commandFailure, ensureExecutableSignature, type ExecutableSignatureMode, type InstallCommandRunner,
+} from './installSignature.ts'
 
 /** The launcher binary name — `<runtime>-runtime`, matching the foundation's
  *  INFRA_RUNTIME_DEFAULT_BIN.notifier and the notifier adapter's buildArgv fallback. */
@@ -43,6 +47,9 @@ export interface SelfInstallOptions {
   /** The running interpreter / compiled bin (default process.execPath). When the
    *  source path is real and this is `bun`, it is the compiler we invoke. */
   execPath?: string
+  /** Platform/command seams for tests; both compile and signing use this runner. */
+  platform?: NodeJS.Platform
+  run?: InstallCommandRunner
 }
 
 export type SelfInstallBinMode = 'compiled' | 'copied-self'
@@ -51,6 +58,7 @@ export interface SelfInstallResult {
   binPath: string
   manifestPath: string
   binMode: SelfInstallBinMode
+  signature: ExecutableSignatureMode
   root: string
   binDir: string
   /** FU6 on-host docs scaffolding outcome (best-effort; never blocks install). */
@@ -87,39 +95,42 @@ export function selfInstall(opts: SelfInstallOptions = {}): SelfInstallResult {
   const execPath = opts.execPath ?? process.execPath
   const binDir = resolveBinDir(env)
   const binPath = join(binDir, BIN_NAME)
+  const run = opts.run ?? spawnSync
 
   mkdirSync(binDir, { recursive: true, mode: 0o755 })
 
   // Build to a sibling tmp in the SAME dir (rename is atomic only within one FS), then
-  // chmod +x and rename over the target. A reader of `notifier-runtime` never sees a
-  // half-written file.
-  const tmp = `${binPath}.tmp.${process.pid}.${Math.abs(hashStr(binPath + execPath))}`
+  // chmod +x, strict signature gate, then rename over the target. A signature
+  // failure leaves BOTH the previous bin and manifest untouched.
+  const tmp = `${binPath}.tmp.${process.pid}.${randomUUID()}`
   let binMode: SelfInstallBinMode
+  let signature: ExecutableSignatureMode
 
-  if (isCompilableSource(sourceEntry) && isBunInterpreter(execPath)) {
-    // PRIMARY path: running under bun from the package source (npx → bin → bun cli.ts).
-    // Compile a self-contained snapshot so the installed bin does not depend on the
-    // npm cache (GC'd) or the source tree.
-    const r = spawnSync(execPath, ['build', '--compile', '--outfile', tmp, sourceEntry], {
-      encoding: 'utf8',
-      env: env as Record<string, string>,
-    })
-    if (r.error || (r.status ?? 1) !== 0) {
-      cleanup(tmp)
-      throw new Error(
-        `self-install: bun build --compile failed: ${(r.stderr || r.stdout || r.error?.message || `exit ${r.status}`).trim()}`,
-      )
+  try {
+    if (isCompilableSource(sourceEntry) && isBunInterpreter(execPath)) {
+      // PRIMARY: compile a self-contained snapshot, independent of npm cache GC.
+      const r = run(execPath, ['build', '--compile', '--outfile', tmp, sourceEntry], {
+        encoding: 'utf8',
+        env,
+      })
+      if (r.error || r.signal || r.status !== 0) {
+        throw new Error(`self-install: bun build --compile failed: ${commandFailure(r)}`)
+      }
+      binMode = 'compiled'
+    } else {
+      // FALLBACK: no source/compiler — copy the running executable instead.
+      copyFileSync(execPath, tmp)
+      binMode = 'copied-self'
     }
-    binMode = 'compiled'
-  } else {
-    // FALLBACK: running from an already-compiled bin (no .ts source / execPath is not
-    // bun). Re-assert the install by copying the running executable into binDir.
-    copyFileSync(execPath, tmp)
-    binMode = 'copied-self'
-  }
 
-  chmodSync(tmp, 0o755)
-  renameSync(tmp, binPath)
+    chmodSync(tmp, 0o755)
+    signature = ensureExecutableSignature(tmp, { platform: opts.platform, env, run })
+    renameSync(tmp, binPath)
+  } finally {
+    // Includes partial compile/copy, chmod, signature, and rename failures. Do
+    // not leave unsigned/invalid .dead binaries alongside the installed one.
+    rmSync(tmp, { force: true })
+  }
 
   // Manifest pins the ABSOLUTE installed bin into the self-config descriptor.
   const manifest = buildManifest(binPath)
@@ -133,7 +144,7 @@ export function selfInstall(opts: SelfInstallOptions = {}): SelfInstallResult {
   // install where the version-matched docs/ actually exists.
   const docs = scaffoldHostDocs(DOCS_PKG, join(sourceEntry, '..', '..', 'docs'), env)
 
-  return { binPath, manifestPath, binMode, root: resolveIapeerRoot(env), binDir, docs }
+  return { binPath, manifestPath, binMode, signature, root: resolveIapeerRoot(env), binDir, docs }
 }
 
 /** Is `execPath` a bun interpreter (so `<execPath> build` works)? When running
@@ -143,20 +154,4 @@ export function selfInstall(opts: SelfInstallOptions = {}): SelfInstallResult {
 function isBunInterpreter(execPath: string): boolean {
   const base = execPath.split('/').pop() ?? execPath
   return base === 'bun' || base === 'bun-debug'
-}
-
-function cleanup(path: string): void {
-  try {
-    if (existsSync(path)) renameSync(path, `${path}.dead`)
-  } catch {
-    // best-effort
-  }
-}
-
-/** Tiny deterministic string hash for a unique-ish tmp suffix (Math.random is fine to
- *  avoid, but a stable hash keeps the tmp name reproducible within a run). */
-function hashStr(s: string): number {
-  let h = 0
-  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0
-  return h
 }

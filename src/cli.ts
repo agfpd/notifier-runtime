@@ -237,6 +237,7 @@ async function selfInstallCommand(): Promise<void> {
   const r = selfInstall({ env: process.env, sourceEntry: import.meta.path })
   process.stdout.write('notifier-runtime self-install (idempotent)\n')
   process.stdout.write(`  bin:      ${r.binPath}  (${r.binMode})\n`)
+  process.stdout.write(`  signature: ${r.signature}\n`)
   process.stdout.write(`  manifest: ${r.manifestPath}\n`)
   process.stdout.write(`  root:     ${r.root}\n`)
   // FU6 on-host docs: best-effort, so surface BOTH outcomes (copied / skipped)
@@ -248,6 +249,7 @@ async function selfInstallCommand(): Promise<void> {
     bin: r.binPath,
     manifest: r.manifestPath,
     binMode: r.binMode,
+    signature: r.signature,
     root: r.root,
     docsCopied: r.docs.copied,
     docsDest: r.docs.dest,

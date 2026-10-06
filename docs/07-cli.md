@@ -18,6 +18,19 @@ Places a self-contained launcher binary on your `PATH` and writes the runtime ma
 
 The binary goes to `IAPEER_BIN_DIR`, or `~/.local/bin` if that isn't set. It's a compiled snapshot (`bun build --compile`), so it runs without a separate runtime on `PATH`. The manifest is written to `<IAPEER_ROOT>/runtimes/notifier/runtime.json` *after* the binary is in place. The whole operation is idempotent — run it again and you get a byte-identical manifest. See [09 — Architecture](09-architecture.md) for what the manifest contains.
 
+On macOS, both compile and copy-self stage the binary in a sibling temporary file,
+make it executable, then run `/usr/bin/codesign --verify --deep --strict` before
+publishing the binary or manifest. Valid signatures are left untouched (preserving
+their identity for macOS permissions). Invalid/unsigned code is repaired with
+`codesign --force --sign -` and must pass strict verification again. If verification
+cannot run, or signing/reverification fails, install aborts: the previous binary
+and manifest remain unchanged and the temporary binary is removed. Each codesign
+command has a 30-second timeout. Output reports `signature: valid|repaired|skipped`
+(`skipped` is only for non-macOS). This is a local install gate, not notarization or
+a promise that every invalid binary can be repaired. Apple's
+[code signing guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)
+describes strict verification.
+
 ## `run`
 
 The always-on run-loop — the entrypoint iapeer's launcher starts under launchd. It dispatches on the resolved personality: `timer` runs the scheduler (TIME), `watcher` runs the supervisor (EVENT). The loop loads the peer's triggers, re-drains any signals stranded in the spool by a previous process, listens for registration messages on stdin, and fires triggers as they come due. It shuts down cleanly on SIGINT/SIGTERM.
