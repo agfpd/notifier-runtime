@@ -359,6 +359,7 @@ export function describeFormat(role: Role): string {
       '  • check: a path gate — fire only if the script exits 0.',
       '  • fallback: escalation chain — if target stays unreachable after retries, the signal',
       '    goes to your fallback peer(s), then to you (owner), then to the global backstop if set. Never silently dropped.',
+      '    A human (e.g. arthur) is NOT a valid link — the notifier has no telegram face; use a telegram-faced agent.',
       '  • re-registering the same id = REPLACE.',
     )
   } else {
@@ -374,6 +375,7 @@ export function describeFormat(role: Role): string {
       '  • heartbeatSec: silence longer than it → restart + alert owner (hang detection).',
       '  • fallback: escalation chain — if target stays unreachable after retries, the signal',
       '    goes to your fallback peer(s), then to you (owner), then to the global backstop if set. Never silently dropped.',
+      '    A human (e.g. arthur) is NOT a valid link — the notifier has no telegram face; use a telegram-faced agent.',
       '  • re-registering the same id = REPLACE.',
     )
   }

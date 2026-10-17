@@ -13,6 +13,13 @@ The global escalation backstop — a final recipient appended to every signal's 
 - **Default:** empty. With no backstop, the owner is the terminal link, and a fresh install needs no team-specific setup.
 - See [06 — Escalation](06-escalation.md).
 
+### `NOTIFIER_ALARM_RELAYS`
+
+Comma-separated list of telegram-faced agents that receive the **lost-digest** (dead-letters nobody in their chain could take) and are asked to relay it to the human. The notifier has no telegram face of its own, so it reaches a person only through such a relay.
+
+- **Default:** the global backstop, then every telegram-faced agent in the peer registry. At most 3 are tried per pass; links that can never be delivered are filtered out.
+- See [06 — Escalation](06-escalation.md#when-the-whole-chain-fails).
+
 ## What iapeer sets
 
 These come from the launch environment iapeer provides; you don't set them by hand, and changing them by hand is usually a mistake.

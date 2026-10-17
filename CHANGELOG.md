@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-17
+
+Incident 26.08–17.10.2026: 2335 timer fires became dead-letters over seven
+weeks and nobody noticed — a chain with a link that could never be delivered
+(`fallback: arthur` from a sender without a telegram face) was accepted
+silently, and status `lost` surfaced nowhere but a log line and a file.
+
+### Added
+
+- **Static reachability check of the chain** (`reachability.ts`). From the
+  peer registry: a human peer while the sender has no telegram face, or a
+  model-less program peer (`intelligence: absent`), can never be delivered.
+  - Registration **refuses** such a `target`/`fallback` loudly (reply names the
+    link, the reason and telegram-faced relays to use); nothing is written. A
+    link missing from the registry is accepted with a ⚠ warning in the reply.
+  - At runtime such a link is **skipped** (`link-skipped`, attempt recorded as
+    `skipped: <reason>`, no send, no retry delay); on start/reload the owner of
+    each affected trigger gets one `notifier-dead-link` alert per process.
+- **Lost-digest** (`lostReport.ts`): 60 s after start and every 10 min, all
+  unreported dead-letters are folded into ONE digest grouped by trigger and sent
+  to a telegram-faced relay agent asked to tell the human and the owners
+  (`NOTIFIER_ALARM_RELAYS`, default backstop + telegram-faced agents, ≤3 per
+  pass). Entries are marked `reportedAt` only after a relay accepted; until
+  then every pass retries. Sent directly, not through the escalator.
+- Timer fire `meta` now carries the trigger `id` (log attribution + digest
+  grouping; coalescing key becomes per-trigger).
+
 ## [0.4.1] - 2026-10-06
 
 ### Fixed

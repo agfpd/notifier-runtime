@@ -23,6 +23,13 @@ The runtime tries each link in turn. On a link it makes **two attempts** (one im
 
 Duplicate links are collapsed, so naming yourself as the fallback doesn't waste an attempt.
 
+### Links that can never be delivered
+
+Some links fail by construction, not by chance: a **human** peer (for example `arthur`) — iapeer delivers to a person only over a telegram face, and `timer`/`watcher` have none — and a **program peer with no model** (`intelligence: absent`, such as `timer` or `watcher` themselves). No retry fixes them.
+
+- **At registration** such a `target` or `fallback` is **refused** with a reply that names the link, the reason, and telegram-faced agents to use as a relay instead. Nothing is written. A link missing from the peer registry is accepted with a ⚠ warning in the reply.
+- **At runtime** (triggers registered before this check, hand-edited profiles) the link is **skipped** — recorded in the attempt history as `skipped: <reason>`, no send, no retry delay — and the owner gets **one** alert per trigger and link, naming the shortened chain, after each runtime start.
+
 ### Declaring a fallback
 
 ```
@@ -38,7 +45,12 @@ If `ops` can't be reached after retries, the heartbeat goes to `oncall`, then ba
 
 ## When the whole chain fails
 
-If every link is exhausted, the signal becomes a loud `delivery-lost` and is written to a durable **dead-letter file**. It is not retried again automatically — but it stays on disk for an operator to find. Nothing is dropped silently.
+If every link is exhausted, the signal becomes a loud `delivery-lost` and is written to a durable **dead-letter file**. It is not retried again automatically — but it stays on disk, and it is **surfaced**:
+
+- **Lost-digest.** About a minute after start, and then every 10 minutes, the runtime gathers every dead-letter not yet reported and sends **one** digest — grouped by trigger, with counts, first/last time and the last error — to a **relay**: a telegram-faced agent asked to tell the human and the owners. Relays are `NOTIFIER_ALARM_RELAYS` if set, otherwise the global backstop followed by the telegram-faced agents in the registry; at most 3 are tried per pass, one attempt each.
+- A dead-letter is marked `reportedAt` only once a relay accepted the digest. While no relay can be reached, every pass retries — an outage delays the digest, never drops it. The digest is sent directly, not through the escalation chain, so it can't feed the loop it reports on.
+
+Worst case from a fire to the digest: chain exhaustion (minutes) plus one 10-minute interval.
 
 ## Storm protection
 
@@ -69,5 +81,7 @@ A single delivery is one `iapeer send` to the recipient, with the message piped 
 | Delay between attempts on a link | 30 seconds |
 | Hard timeout per delivery attempt | 120 seconds |
 | Global backstop | `NOTIFIER_FALLBACK_TARGET` (empty by default) |
+| Lost-digest | first pass 60 s after start, then every 10 minutes; ≤ 3 relays per pass |
+| Lost-digest relays | `NOTIFIER_ALARM_RELAYS` (default: backstop + telegram-faced agents) |
 
-Only the backstop is configurable; the attempt and timeout values are fixed policy. See [08 — Configuration](08-configuration.md).
+Only the backstop and the relays are configurable; the attempt and timeout values are fixed policy. See [08 — Configuration](08-configuration.md).

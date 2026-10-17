@@ -277,7 +277,7 @@ describe('Scheduler — escalation handoff', () => {
         topic: 'mining',
         fallbacks: ['boris'],
         owner: 'arthur',
-        meta: { owner: 'arthur', when: '@every 30m', reason: 'unconditional' },
+        meta: { id: 't-linus-@every 30m', owner: 'arthur', when: '@every 30m', reason: 'unconditional' },
       },
     ])
   })

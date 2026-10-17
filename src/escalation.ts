@@ -84,6 +84,10 @@ export interface SpoolEntry {
   // How many byte-identical duplicates were coalesced onto this entry while it
   // was in flight (deliver-time dedup + re-drain merge). Absent = 0.
   coalesced?: number
+  // Set by the LostReporter once this dead-letter was included in a lost-digest
+  // that reached a live relay (lostReport.ts). Absent on a "lost" entry = the
+  // loss has not been surfaced to anyone yet.
+  reportedAt?: string
   meta?: Record<string, unknown>
 }
 
@@ -96,6 +100,8 @@ export interface Spool {
   // Entries to re-drain on start: status "pending" only. Dead-letters
   // (status "lost") stay on disk for the operator but are never re-sent.
   loadPending(): SpoolEntry[]
+  // Dead-letters (status "lost") not yet surfaced by a lost-digest.
+  loadUnreportedLost(): SpoolEntry[]
 }
 
 type Log = (evt: string, fields?: Record<string, unknown>) => void
@@ -126,34 +132,40 @@ export function makeFileSpool(dir: string, log?: Log): Spool {
       }
     },
     loadPending(): SpoolEntry[] {
-      let files: string[]
-      try {
-        files = readdirSync(dir)
-      } catch {
-        return [] // No spool dir yet → nothing pending.
-      }
-      const out: SpoolEntry[] = []
-      for (const f of files) {
-        if (!f.endsWith('.json')) continue
-        try {
-          const entry = JSON.parse(readFileSync(join(dir, f), 'utf8')) as SpoolEntry
-          if (
-            entry &&
-            entry.status === 'pending' &&
-            typeof entry.target === 'string' &&
-            typeof entry.message === 'string' &&
-            Array.isArray(entry.chain) &&
-            Array.isArray(entry.attempts)
-          ) {
-            out.push(entry)
-          }
-        } catch (err) {
-          // A corrupt entry must not abort the drain of the healthy ones.
-          log?.('spool-read-error', { file: f, error: err instanceof Error ? err.message : String(err) })
-        }
-      }
-      return out
+      return scan(e => e.status === 'pending')
     },
+    loadUnreportedLost(): SpoolEntry[] {
+      return scan(e => e.status === 'lost' && !e.reportedAt)
+    },
+  }
+  function scan(want: (e: SpoolEntry) => boolean): SpoolEntry[] {
+    let files: string[]
+    try {
+      files = readdirSync(dir)
+    } catch {
+      return [] // No spool dir yet → nothing pending.
+    }
+    const out: SpoolEntry[] = []
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue
+      try {
+        const entry = JSON.parse(readFileSync(join(dir, f), 'utf8')) as SpoolEntry
+        if (
+          entry &&
+          want(entry) &&
+          typeof entry.target === 'string' &&
+          typeof entry.message === 'string' &&
+          Array.isArray(entry.chain) &&
+          Array.isArray(entry.attempts)
+        ) {
+          out.push(entry)
+        }
+      } catch (err) {
+        // A corrupt entry must not abort the drain of the healthy ones.
+        log?.('spool-read-error', { file: f, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    return out
   }
 }
 
@@ -173,6 +185,9 @@ export class InMemorySpool implements Spool {
   loadPending(): SpoolEntry[] {
     return [...this.entries.values()].filter(e => e.status === 'pending').map(e => structuredClone(e))
   }
+  loadUnreportedLost(): SpoolEntry[] {
+    return [...this.entries.values()].filter(e => e.status === 'lost' && !e.reportedAt).map(e => structuredClone(e))
+  }
 }
 
 // ── Escalator ────────────────────────────────────────────────────────────────
@@ -187,6 +202,11 @@ interface EscalatorDeps {
   now: () => Date
   // Spool-entry id source — injectable for deterministic tests.
   makeId?: () => string
+  // Static dead-link predicate (reachability.ts): a reason string when `peer`
+  // can NEVER be delivered by this notifier (human without a telegram face on
+  // our side, model-less program peer), else null. Such a link is skipped
+  // instead of burning attempts + retry delay on a guaranteed refusal.
+  deadLink?: (peer: string) => string | null
 }
 
 interface EscalatorOpts {
@@ -432,6 +452,14 @@ export class Escalator {
       for (let li = 0; li < entry.chain.length; li++) {
         const to = entry.chain[li]!
         const isPrimary = li === 0
+        const dead = this.deps.deadLink?.(to) ?? null
+        if (dead) {
+          if (rec.cancelled) return
+          entry.attempts.push({ target: to, at: this.deps.now().toISOString(), error: `skipped: ${dead}` })
+          this.deps.spool.update(entry)
+          this.deps.log('link-skipped', { sig: entry.id, kind: entry.kind, to, link: li + 1, reason: dead })
+          continue
+        }
         const message = isPrimary ? entry.message : wrapForFallback(entry, li)
         for (let attempt = 1; attempt <= this.attemptsPerLink; attempt++) {
           // Flood-breaker latch: checked before every attempt (and implicitly

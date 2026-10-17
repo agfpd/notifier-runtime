@@ -117,3 +117,18 @@ export const FLOOD_WINDOW_MS = 10_000
 // to a peer that should catch any signal the owner could not be reached for (e.g.
 // a team-wide on-call peer).
 export const DEFAULT_FALLBACK_TARGET = ''
+
+// --- Lost-digest (lostReport.ts) --------------------------------------------
+//
+// Incident 26.08–17.10.2026: 2335 dead-letters sat silently in the spool for 7
+// weeks. The LostReporter surfaces every not-yet-reported dead-letter in ONE
+// digest to a telegram-faced relay agent. First pass shortly after start (so a
+// restart surfaces what is already on disk), then every interval. Worst case
+// from a fire to the digest: chain exhaustion (≤ ~15 min with send timeouts)
+// + one interval — well inside an hour.
+export const LOST_DIGEST_FIRST_DELAY_MS = 60_000
+export const LOST_DIGEST_INTERVAL_MS = 10 * 60_000
+
+// Registry snapshot TTL for the runtime dead-link check (one file read per TTL,
+// not per delivery attempt).
+export const REGISTRY_CACHE_MS = 60_000

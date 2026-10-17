@@ -207,7 +207,7 @@ export class Scheduler {
       ...(trigger.topic ? { topic: trigger.topic } : {}),
       ...(trigger.fallback ? { fallbacks: trigger.fallback } : {}),
       owner: trigger.owner,
-      meta: { owner: trigger.owner, when: trigger.when, reason: gate.reason },
+      meta: { id: trigger.id, owner: trigger.owner, when: trigger.when, reason: gate.reason },
     })
   }
 

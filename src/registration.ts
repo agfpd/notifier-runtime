@@ -9,6 +9,7 @@ import {
 } from './format.ts'
 import { PeerProfileStore, type StoredTrigger } from './peerProfileStore.ts'
 import type { Transport } from './transport.ts'
+import { checkReachable, type Registry } from './reachability.ts'
 
 // ── Registration handler ────────────────────────────────────────────────────
 //
@@ -47,6 +48,9 @@ export interface RegistrationDeps {
   // Injected by tests for deterministic script-existence checks; passed straight
   // through to parseRegistration.
   scriptProbe?: ScriptProbe
+  // Peer registry snapshot for the static reachability lint of the chain
+  // (reachability.ts). Absent → no lint (tests / degraded mode).
+  registry?: () => Registry
 }
 
 export interface HandleResult {
@@ -266,6 +270,35 @@ function dispatch(
   // register: target "self" → requester. owner is ALWAYS the requester.
   const resolvedTarget = command.config.target === 'self' ? requester : command.config.target
   const stored = toStoredTrigger(command, requester, resolvedTarget)
+
+  // Static reachability lint of the declared chain (target + fallbacks). A link
+  // that can NEVER be delivered (a human with no telegram face on the sender
+  // side, a model-less program peer) is refused LOUDLY — accepting it silently
+  // is how mrbooker's `fallback: arthur` burned 7 weeks of fires (26.08–17.10).
+  // Unverifiable links (not in the registry) pass with a warning in the reply.
+  const warnings: string[] = []
+  if (deps.registry) {
+    const reg = deps.registry()
+    const errors: string[] = []
+    const links = [stored.target, ...(stored.fallback ?? [])]
+    for (const [i, link] of links.entries()) {
+      if (links.indexOf(link) !== i) continue
+      const r = checkReachable(link, role, reg)
+      if (!r) continue
+      const where = i === 0 ? 'target' : 'fallback'
+      ;(r.level === 'error' ? errors : warnings).push(`${where} ${r.reason}`)
+    }
+    if (errors.length > 0) {
+      const msg =
+        `notifier-${role}: REFUSED — the escalation chain has a link that can never be delivered:\n` +
+        errors.map(e => `  ✗ ${e}`).join('\n') +
+        `\nNothing was registered. Fix the chain and register again.\n\n${cliReply(role, requester, ownTriggers())}`
+      reply(deps, requester, msg, topic, ephemeral)
+      log('register-refused-dead-link', { requester, id: stored.id, errors: errors.length })
+      return { outcome: 'rejected', reply: msg, reloaded: false }
+    }
+  }
+
   const outcome = deps.store.upsert(cwd, stored) // 'added' | 'replaced'
   const reloaded = runReload(deps, log)
   const verb = outcome === 'replaced' ? 'replaced' : 'registered'
@@ -286,7 +319,8 @@ function dispatch(
     `✓ ${verb} ${role} trigger "${stored.id}" → "${resolvedTarget}"` +
     (stored.topic ? ` (topic "${stored.topic}")` : '') +
     `. ${live}`
-  const msg = `${header}\n\n${cliReply(role, requester, ownTriggers())}`
+  const warn = warnings.length > 0 ? `\n⚠ ${warnings.join('\n⚠ ')}` : ''
+  const msg = `${header}${warn}\n\n${cliReply(role, requester, ownTriggers())}`
   reply(deps, requester, msg, topic, ephemeral)
   log(outcome === 'replaced' ? 'register-replaced' : 'registered', {
     requester,

@@ -1,7 +1,16 @@
 #!/usr/bin/env bun
 import { existsSync, statSync } from 'fs'
 import { join } from 'path'
-import { DEFAULT_FALLBACK_TARGET, RUNTIME } from './constants.ts'
+import {
+  DEFAULT_FALLBACK_TARGET,
+  LOST_DIGEST_FIRST_DELAY_MS,
+  LOST_DIGEST_INTERVAL_MS,
+  REGISTRY_CACHE_MS,
+  RUNTIME,
+} from './constants.ts'
+import { LostReporter } from './lostReport.ts'
+import { checkReachable, readRegistry, telegramRelays, type Registry } from './reachability.ts'
+import type { Trigger } from './triggers.ts'
 import { runCheck } from './checkGate.ts'
 import { Escalator, makeFileSpool } from './escalation.ts'
 import { resolvePersonality } from './identity.ts'
@@ -50,13 +59,39 @@ function log(evt: string, fields: Record<string, unknown> = {}): void {
 // timer and watcher are separate processes and must not drain each other's
 // spool), global backstop with NOTIFIER_FALLBACK_TARGET operator override.
 // start() re-drains signals that were in flight when the previous process died.
-function makeEscalator(personality: string): Escalator {
+// Registry snapshot with a short TTL — the runtime dead-link check and relay
+// discovery read it per delivery, the file is re-read at most once per TTL.
+let registryCache: { at: number; reg: Registry } | null = null
+function registry(): Registry {
+  const now = Date.now()
+  if (!registryCache || now - registryCache.at > REGISTRY_CACHE_MS) registryCache = { at: now, reg: readRegistry() }
+  return registryCache.reg
+}
+
+// A reason when `peer` can NEVER be delivered by this notifier personality.
+function deadLinkFor(personality: string): (peer: string) => string | null {
+  return peer => {
+    const r = checkReachable(peer, personality, registry())
+    return r?.level === 'error' ? r.reason : null
+  }
+}
+
+interface NotifierDelivery {
+  escalator: Escalator
+  backstop: string
+}
+
+function makeEscalator(personality: string): NotifierDelivery {
   const spoolDir = join(resolveIapeerRoot(process.env), 'state', RUNTIME, personality, 'escalation')
   const backstop = process.env.NOTIFIER_FALLBACK_TARGET?.trim() || DEFAULT_FALLBACK_TARGET
+  const spool = makeFileSpool(spoolDir, log)
+  const transport = makeAsyncIapTransport({ cwd: process.cwd(), env: process.env })
+  const deadLink = deadLinkFor(personality)
   const escalator = new Escalator(
     {
-      transport: makeAsyncIapTransport({ cwd: process.cwd(), env: process.env }),
-      spool: makeFileSpool(spoolDir, log),
+      transport,
+      spool,
+      deadLink,
       log,
       setTimer: (ms, cb) => {
         const t = setTimeout(cb, ms)
@@ -67,7 +102,69 @@ function makeEscalator(personality: string): Escalator {
     { backstop },
   )
   log('escalation-ready', { spool: spoolDir, backstop })
-  return escalator
+
+  // Lost-digest: surface dead-letters to a telegram-faced relay agent. Relays:
+  // NOTIFIER_ALARM_RELAYS (comma list) when set, else the backstop followed by
+  // every telegram-faced agent in the registry; dead links filtered out.
+  const reporter = new LostReporter({
+    spool,
+    transport,
+    relays: () => {
+      const env = process.env.NOTIFIER_ALARM_RELAYS?.split(',').map(s => s.trim()).filter(Boolean)
+      const list = env && env.length > 0 ? env : [backstop, ...telegramRelays(registry())]
+      return [...new Set(list.filter(Boolean))].filter(p => !deadLink(p))
+    },
+    log,
+    now: () => new Date(),
+    identity: `${RUNTIME}-${personality}`,
+    spoolDir,
+  })
+  setTimeout(() => {
+    void reporter.tick()
+    setInterval(() => void reporter.tick(), LOST_DIGEST_INTERVAL_MS)
+  }, LOST_DIGEST_FIRST_DELAY_MS)
+
+  return { escalator, backstop }
+}
+
+// Static lint of the loaded triggers' chains (start + every reload): a link
+// that can never be delivered is skipped at runtime (Escalator.deadLink) — and
+// the owner is told ONCE per process per (trigger, link), because a chain the
+// author believes in but which is silently shortened is the 26.08 failure mode.
+function makeChainLint(personality: string, escalator: Escalator, backstop: string): (ts: Trigger[]) => void {
+  const told = new Set<string>()
+  const deadLink = deadLinkFor(personality)
+  return triggers => {
+    if (backstop) {
+      const r = deadLink(backstop)
+      if (r && !told.has(`backstop|${backstop}`)) {
+        told.add(`backstop|${backstop}`)
+        log('backstop-dead-link', { backstop, reason: r })
+      }
+    }
+    for (const t of triggers) {
+      const links = [t.target, ...(t.fallback ?? [])]
+      for (const link of new Set(links)) {
+        const reason = deadLink(link)
+        if (!reason) continue
+        const key = `${t.owner}|${t.id}|${link}`
+        if (told.has(key)) continue
+        told.add(key)
+        log('trigger-dead-link', { owner: t.owner, id: t.id, link, reason })
+        void escalator.deliver({
+          kind: 'alert',
+          target: t.owner,
+          owner: t.owner,
+          topic: 'notifier-dead-link',
+          message:
+            `notifier-${personality}: your trigger "${t.id}" has a link that can never be delivered — ${reason}. ` +
+            `It is SKIPPED at runtime, so your chain is shorter than declared ` +
+            `(${links.join('→')}). Re-register the trigger without it (same id = replace).`,
+          meta: { id: t.id },
+        })
+      }
+    }
+  }
 }
 
 async function runCommand(): Promise<void> {
@@ -99,7 +196,8 @@ async function runTimer(triggers: TimeTrigger[], personality: string, errorCount
   process.on('SIGINT', () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
 
-  const escalator = makeEscalator(personality)
+  const { escalator, backstop } = makeEscalator(personality)
+  const lint = makeChainLint(personality, escalator, backstop)
   const scheduler = new Scheduler(triggers, {
     now: () => new Date(),
     deliver: job => {
@@ -114,7 +212,9 @@ async function runTimer(triggers: TimeTrigger[], personality: string, errorCount
   installEnvelopeReader('timer', () => {
     const { ok, errors } = loadTriggers()
     for (const error of errors) log('trigger-load-error', { error })
-    scheduler.reload(ok.filter((t): t is TimeTrigger => t.role === 'time'))
+    const time = ok.filter((t): t is TimeTrigger => t.role === 'time')
+    scheduler.reload(time)
+    lint(time)
   })
 
   log('start', {
@@ -127,13 +227,15 @@ async function runTimer(triggers: TimeTrigger[], personality: string, errorCount
   // Re-drain signals stranded by the previous process (write-ahead spool) —
   // after 'start' so the redrain log lines are attributable to this session.
   escalator.start()
+  lint(triggers)
 
   await scheduler.run(controller.signal)
   log('stopped', {})
 }
 
 async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise<void> {
-  const escalator = makeEscalator('watcher')
+  const { escalator, backstop } = makeEscalator('watcher')
+  const lint = makeChainLint('watcher', escalator, backstop)
   const supervisor = new Supervisor(triggers, {
     now: () => Date.now(),
     deliver: job => {
@@ -157,7 +259,9 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
   installEnvelopeReader('watcher', () => {
     const { ok, errors } = loadTriggers()
     for (const error of errors) log('trigger-load-error', { error })
-    supervisor.reload(ok.filter((t): t is EventTrigger => t.role === 'event'))
+    const event = ok.filter((t): t is EventTrigger => t.role === 'event')
+    supervisor.reload(event)
+    lint(event)
   })
 
   log('start', {
@@ -169,6 +273,7 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
 
   // Re-drain stranded signals BEFORE the watchers start streaming new ones.
   escalator.start()
+  lint(triggers)
 
   supervisor.start()
 
@@ -217,7 +322,7 @@ function installEnvelopeReader(role: Role, reloadCb: () => void): void {
     for (const raw of extracted.envelopes) {
       try {
         const env = parseIapEnvelope(raw)
-        handleEnvelope(env, role, { store, transport, reloadCb, log })
+        handleEnvelope(env, role, { store, transport, reloadCb, log, registry })
       } catch (err) {
         // A malformed envelope is logged and dropped — never crashes the reader
         // (the next valid envelope still processes).
