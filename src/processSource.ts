@@ -1,4 +1,4 @@
-import { spawn } from 'child_process'
+import { spawn, spawnSync } from 'child_process'
 
 // A handle on one running watcher process. The supervisor wires callbacks for
 // stdout lines, raw stderr, and exit, and can kill the process. Implementations
@@ -67,6 +67,82 @@ export class LineBuffer {
   }
 }
 
+// --- Process-tree kill ---------------------------------------------------------
+//
+// A watcher runs as `/bin/sh -c <script>`. For a pipeline (`tail -F f | grep x`)
+// the shell forks one child per stage; `child.kill` signals ONLY the shell, and
+// the stages reparent to pid 1 and live on as orphans (observed: tail/grep left
+// behind after unregister + re-register). Worse, the last stage holds our stdout
+// pipe, so 'close' — and with it the supervisor's onExit — is delayed until the
+// orphan dies on its own.
+//
+// Fix: snapshot the whole descendant tree BEFORE signalling (once the root dies
+// its children reparent and the parent link is gone), then signal root first
+// (so a looping shell cannot fork a replacement stage) and every descendant
+// top-down. Deliberately NOT a detached process group: children must stay in
+// the notifier's group so launchd still reaps them if the notifier itself dies.
+
+// pid → direct children, from one `ps` snapshot (one spawn, consistent view).
+// Returns null if ps is unavailable — the caller then falls back to root-only.
+export function readProcessTable(
+  run: typeof spawnSync = spawnSync,
+): Map<number, number[]> | null {
+  const r = run('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 2000 })
+  if (r.error || r.status !== 0 || typeof r.stdout !== 'string') return null
+  const children = new Map<number, number[]>()
+  for (const row of r.stdout.split('\n')) {
+    const m = row.trim().match(/^(\d+)\s+(\d+)$/)
+    if (!m) continue
+    const pid = Number(m[1])
+    const ppid = Number(m[2])
+    const list = children.get(ppid)
+    if (list) list.push(pid)
+    else children.set(ppid, [pid])
+  }
+  return children
+}
+
+// All descendants of `root` (excluding root), breadth-first = top-down order.
+export function descendantsOf(root: number, table: Map<number, number[]>): number[] {
+  const out: number[] = []
+  const seen = new Set<number>([root])
+  const queue = [root]
+  while (queue.length > 0) {
+    const pid = queue.shift()!
+    for (const c of table.get(pid) ?? []) {
+      if (seen.has(c)) continue
+      seen.add(c)
+      out.push(c)
+      queue.push(c)
+    }
+  }
+  return out
+}
+
+export function killTree(
+  rootPid: number | undefined,
+  signal: NodeJS.Signals,
+  killRoot: () => void,
+  deps: { table?: () => Map<number, number[]> | null; signal?: (pid: number, sig: NodeJS.Signals) => void } = {},
+): number[] {
+  if (rootPid === undefined) {
+    killRoot()
+    return []
+  }
+  const table = (deps.table ?? (() => readProcessTable()))()
+  const descendants = table ? descendantsOf(rootPid, table) : []
+  killRoot()
+  const send = deps.signal ?? ((pid, sig) => process.kill(pid, sig))
+  for (const pid of descendants) {
+    try {
+      send(pid, signal)
+    } catch {
+      // ESRCH: already gone (died with its parent / closed pipe) — fine.
+    }
+  }
+  return descendants
+}
+
 // Production source: child_process.spawn with stdio ['ignore','pipe','pipe'].
 // stdin is ignored (a watcher reads no input from us); stdout/stderr are piped
 // so we can line-buffer stdout and log stderr.
@@ -120,7 +196,7 @@ export function nodeProcessSource(): ProcessSource {
           exitCb = cb
         },
         kill(signal?: NodeJS.Signals) {
-          child.kill(signal)
+          killTree(child.pid, signal ?? 'SIGTERM', () => child.kill(signal))
         },
         get pid() {
           return child.pid

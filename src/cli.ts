@@ -8,6 +8,7 @@ import {
   REGISTRY_CACHE_MS,
   RUNTIME,
 } from './constants.ts'
+import { EchoGuard } from './echoGuard.ts'
 import { LostReporter } from './lostReport.ts'
 import { checkReachable, readRegistry, telegramRelays, type Registry } from './reachability.ts'
 import type { Trigger } from './triggers.ts'
@@ -79,13 +80,17 @@ function deadLinkFor(personality: string): (peer: string) => string | null {
 interface NotifierDelivery {
   escalator: Escalator
   backstop: string
+  echoGuard: EchoGuard
 }
 
 function makeEscalator(personality: string): NotifierDelivery {
   const spoolDir = join(resolveIapeerRoot(process.env), 'state', RUNTIME, personality, 'escalation')
   const backstop = process.env.NOTIFIER_FALLBACK_TARGET?.trim() || DEFAULT_FALLBACK_TARGET
   const spool = makeFileSpool(spoolDir, log)
-  const transport = makeAsyncIapTransport({ cwd: process.cwd(), env: process.env })
+  // Every outbound send of this process goes through the echo guard, so the
+  // watcher can recognize its own deliveries coming back via the delivery log.
+  const echoGuard = new EchoGuard(`${RUNTIME}-${personality}`)
+  const transport = echoGuard.wrapAsync(makeAsyncIapTransport({ cwd: process.cwd(), env: process.env }))
   const deadLink = deadLinkFor(personality)
   const escalator = new Escalator(
     {
@@ -124,7 +129,7 @@ function makeEscalator(personality: string): NotifierDelivery {
     setInterval(() => void reporter.tick(), LOST_DIGEST_INTERVAL_MS)
   }, LOST_DIGEST_FIRST_DELAY_MS)
 
-  return { escalator, backstop }
+  return { escalator, backstop, echoGuard }
 }
 
 // Static lint of the loaded triggers' chains (start + every reload): a link
@@ -196,7 +201,7 @@ async function runTimer(triggers: TimeTrigger[], personality: string, errorCount
   process.on('SIGINT', () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
 
-  const { escalator, backstop } = makeEscalator(personality)
+  const { escalator, backstop, echoGuard } = makeEscalator(personality)
   const lint = makeChainLint(personality, escalator, backstop)
   const scheduler = new Scheduler(triggers, {
     now: () => new Date(),
@@ -209,7 +214,7 @@ async function runTimer(triggers: TimeTrigger[], personality: string, errorCount
 
   // Live-reload: a registration message re-projects the TIME triggers and
   // diffs them into the running scheduler (surviving slots keep their grid).
-  installEnvelopeReader('timer', () => {
+  installEnvelopeReader('timer', echoGuard, () => {
     const { ok, errors } = loadTriggers()
     for (const error of errors) log('trigger-load-error', { error })
     const time = ok.filter((t): t is TimeTrigger => t.role === 'time')
@@ -234,7 +239,7 @@ async function runTimer(triggers: TimeTrigger[], personality: string, errorCount
 }
 
 async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise<void> {
-  const { escalator, backstop } = makeEscalator('watcher')
+  const { escalator, backstop, echoGuard } = makeEscalator('watcher')
   const lint = makeChainLint('watcher', escalator, backstop)
   const supervisor = new Supervisor(triggers, {
     now: () => Date.now(),
@@ -246,6 +251,7 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
     cancelForwards: watcherId =>
       escalator.cancelPending(e => e.kind === 'forward' && e.meta?.id === watcherId),
     processSource: nodeProcessSource(),
+    echoOf: line => echoGuard.echoOf(line),
     log,
     // Real timer for backoff + heartbeat; cancel clears it.
     setTimer: (ms, cb) => {
@@ -256,7 +262,7 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
 
   // Live-reload: a registration message re-projects the EVENT triggers and
   // diffs them into the running supervisor (surviving watchers keep running).
-  installEnvelopeReader('watcher', () => {
+  installEnvelopeReader('watcher', echoGuard, () => {
     const { ok, errors } = loadTriggers()
     for (const error of errors) log('trigger-load-error', { error })
     const event = ok.filter((t): t is EventTrigger => t.role === 'event')
@@ -307,9 +313,10 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
 // `reloadCb` re-runs loadTriggers and diffs the fresh projection into the
 // running engine (Scheduler.reload / Supervisor.reload) — that is the live
 // pick-up of a just-registered trigger with no restart.
-function installEnvelopeReader(role: Role, reloadCb: () => void): void {
+function installEnvelopeReader(role: Role, echoGuard: EchoGuard, reloadCb: () => void): void {
   const store = new PeerProfileStore()
-  const transport = makeIapTransport({ cwd: process.cwd(), env: process.env })
+  // Registration replies are deliveries too — guard them for echo recognition.
+  const transport = echoGuard.wrapSync(makeIapTransport({ cwd: process.cwd(), env: process.env }))
   let buffer = ''
   // setRawMode throws on a non-tty stdin (piped input / launchd) — guard on
   // isTTY. The reader works either way (it just buffers raw chunks).

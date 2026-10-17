@@ -179,3 +179,93 @@ describe('FakeProcessSource', () => {
     expect(src.current!.kills).toEqual(['SIGTERM', 'SIGKILL'])
   })
 })
+
+// --- process-tree kill (orphaned pipeline stages) ----------------------------
+
+import { descendantsOf, killTree, readProcessTable } from '../src/processSource.ts'
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitFor(pred: () => boolean, ms = 3000): Promise<boolean> {
+  const end = Date.now() + ms
+  while (Date.now() < end) {
+    if (pred()) return true
+    await new Promise(r => setTimeout(r, 25))
+  }
+  return pred()
+}
+
+describe('killTree (unit)', () => {
+  test('descendantsOf walks the tree top-down, root excluded', () => {
+    const t = new Map<number, number[]>([
+      [1, [10]],
+      [10, [11, 12]],
+      [12, [13]],
+    ])
+    expect(descendantsOf(10, t)).toEqual([11, 12, 13])
+    expect(descendantsOf(99, t)).toEqual([])
+  })
+
+  test('snapshot taken BEFORE root kill; root first, then descendants; ESRCH ignored', () => {
+    const order: string[] = []
+    const got = killTree(10, 'SIGTERM', () => order.push('root'), {
+      table: () => {
+        order.push('snapshot')
+        return new Map([[10, [11, 12]]])
+      },
+      signal: (pid, sig) => {
+        order.push(`${pid}:${sig}`)
+        if (pid === 11) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+      },
+    })
+    expect(order).toEqual(['snapshot', 'root', '11:SIGTERM', '12:SIGTERM'])
+    expect(got).toEqual([11, 12])
+  })
+
+  test('no ps → falls back to root-only kill', () => {
+    let rootKilled = false
+    const got = killTree(10, 'SIGKILL', () => (rootKilled = true), { table: () => null })
+    expect(rootKilled).toBe(true)
+    expect(got).toEqual([])
+  })
+
+  test('readProcessTable parses the live table (contains our own pid)', () => {
+    const t = readProcessTable()
+    expect(t).not.toBeNull()
+    expect(descendantsOf(process.ppid, t!)).toContain(process.pid)
+  })
+})
+
+describe('nodeProcessSource kill (real pipeline — no orphans)', () => {
+  for (const sig of ['SIGTERM', 'SIGKILL'] as const) {
+    test(`${sig}: 'sleep | sleep | cat' leaves no stage alive and exit is prompt`, async () => {
+      const source = nodeProcessSource()
+      const handle = source.spawn('/bin/sh', ['-c', 'sleep 307 | sleep 308 | cat'])
+      const root = handle.pid!
+      // Wait until all three stages are forked.
+      let stages: number[] = []
+      expect(
+        await waitFor(() => {
+          stages = descendantsOf(root, readProcessTable()!)
+          return stages.length >= 3
+        }),
+      ).toBe(true)
+      const exited = new Promise<number>(resolve => {
+        const t0 = Date.now()
+        handle.onExit(() => resolve(Date.now() - t0))
+      })
+      handle.kill(sig)
+      const exitMs = await exited
+      // Before the fix 'close' waited on `cat` (holding stdout) — i.e. forever.
+      expect(exitMs).toBeLessThan(2000)
+      expect(await waitFor(() => stages.every(p => !alive(p)))).toBe(true)
+    })
+  }
+})

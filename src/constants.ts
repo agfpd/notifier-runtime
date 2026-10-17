@@ -111,6 +111,12 @@ export const SEND_TIMEOUT_MS = 120_000
 export const FLOOD_THRESHOLD = 30
 export const FLOOD_WINDOW_MS = 10_000
 
+// Echo guard (echoGuard.ts): a watcher line naming our own identity AND a
+// recipient we sent to within this window (or are sending to now) is our own
+// delivery echoing back through the delivery log — dropped before the flood
+// counter. 60s covers tail -F latency plus a slow send with margin.
+export const ECHO_WINDOW_MS = 60_000
+
 // Global backstop — an optional terminal link appended to EVERY escalation chain
 // AFTER the trigger owner. Empty by default: the owner is the terminal link, so a
 // fresh install needs no team-specific configuration. Set NOTIFIER_FALLBACK_TARGET

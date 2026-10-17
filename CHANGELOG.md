@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-17
+
+### Fixed
+
+- **Watcher echo loop** (flood-stops 26.08, 29.09, 06.10, 16.10.2026). A
+  watcher tailing the iapeer delivery log read back the log lines of its OWN
+  deliveries (`caller=notifier-watcher to=<T> ok=…`) and forwarded them again;
+  with an offline target every link of the escalation chain echoed, so per-target
+  `grep -v` filters in the script did not close the class. New `EchoGuard`
+  (`echoGuard.ts`) wraps every outbound transport of the process (escalation,
+  lost-digest, registration replies) and records sends per recipient; a watcher
+  line carrying both the own identity token and a recipient sent to now or
+  ≤ 60 s ago is dropped before the flood counter (`echo-suppressed`), while still
+  counting as a sign of life for health and heartbeat. Stand (tail -F | grep
+  ok=false, all targets offline): before — 37 lines in 2.5 s and a flood-stop;
+  after — seed + one line per chain link, one `delivery-lost`, no flood.
+- **Orphaned pipeline stages on watcher kill.** `kill()` signalled only
+  `/bin/sh -c`; `tail`/`grep` stages reparented to pid 1 and lived on, and the
+  last stage kept stdout open, so the watcher's exit (and with it restart
+  logic) never fired. `kill()` now snapshots the descendant tree (`ps`) before
+  signalling and kills root then every descendant. Covers unregister, same-id
+  replace, heartbeat restart, flood/crashloop trip and shutdown. No detached
+  process group — launchd still reaps children if the notifier dies.
+
 ## [0.5.0] - 2026-10-17
 
 Incident 26.08–17.10.2026: 2335 timer fires became dead-letters over seven

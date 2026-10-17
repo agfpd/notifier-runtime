@@ -28,6 +28,10 @@ export interface SupervisorDeps {
   // this is setTimeout/clearTimeout; in tests a manual queue fires it
   // deterministically so backoff/heartbeat are verified WITHOUT real sleeps.
   setTimer: (ms: number, cb: () => void) => () => void
+  // Echo guard seam (echoGuard.ts): returns the recipient a line echoes (our
+  // own delivery read back from the delivery log), or null. Optional — absent
+  // means no echo suppression (tests that do not exercise it).
+  echoOf?: (line: string) => string | null
 }
 
 export interface SupervisorOpts {
@@ -154,6 +158,19 @@ class Watcher {
     // A tripped breaker (flood or crashloop) stops the forward path outright —
     // lines from a child that has not died yet are part of the storm.
     if (this.circuitOpen) return
+
+    // Echo of our OWN delivery (watcher tailing the delivery log): the script
+    // is alive and working, so health/heartbeat count it like a real line, but
+    // it is never forwarded and never feeds the flood window — that loop is
+    // what tripped the flood breaker 4 times (26.08–16.10.2026).
+    const echo = this.deps.echoOf?.(line)
+    if (echo) {
+      this.emittedLine = true
+      this.resetHealth()
+      this.armHeartbeat()
+      this.deps.log('echo-suppressed', { id: this.id, echoOf: echo, len: line.length })
+      return
+    }
 
     // A forwarded line is the clearest health signal → reset backoff/streak now,
     // not only on exit.
