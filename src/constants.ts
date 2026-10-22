@@ -59,6 +59,15 @@ export const CRASHLOOP_WINDOW_MS = 60_000
 // process surviving its own backoff gap is already considered recovered.
 export const HEALTHY_RUN_MS = 1_000
 
+// Stop escalation (watcher-replace-leak, 2026-10-22): stop() sends SIGTERM to the
+// whole script tree; if the root has not exited after STOP_GRACE_MS the tree
+// (including every pid seen at SIGTERM time, even if already reparented) gets
+// SIGKILL. A replacement script for the same owner:id is started only after the
+// old one is gone — or, if even SIGKILL is not confirmed within STOP_FORCE_MS,
+// started anyway with a loud 'watcher-stop-unconfirmed' log (never wedge a key).
+export const STOP_GRACE_MS = 3_000
+export const STOP_FORCE_MS = 2_000
+
 // --- Escalation -------------------------------------------------------------
 //
 // Rationale: a watcher-detected alarm must never die silently when the target's

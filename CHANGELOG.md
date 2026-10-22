@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-22
+
+### Fixed
+
+- **Watcher same-id replace was a silent no-op when the script text was
+  unchanged** (walt-trader, 22.10.2026). `Supervisor.reload` skipped any key
+  whose config was equal (`sameConfig`), so re-registering the same script
+  after editing the code it runs left the old process running, while the reply
+  claimed "old script stopped, new config streaming". A register now always
+  restarts its own `owner:id` (`reload(..., { restart: [key] })`); reloads
+  caused by other owners' registrations still leave unchanged watchers alone.
+- **Replace could overlap old and new script.** The new script was spawned
+  right after SIGTERM to the old one, and a script that ignored or delayed
+  SIGTERM lived on next to it. Now, for each `owner:id`, the replacement starts
+  only after the previous process exits. SIGTERM goes to the whole tree first,
+  then after 3 s SIGKILL goes to the tree, including descendants already
+  reparented to pid 1 (remembered from the SIGTERM snapshot). If even that exit
+  is never observed within 2 s, the new script is started anyway and
+  `watcher-stop-unconfirmed` is logged. Several replaces in a row while the old
+  process is dying start exactly one new process, running the latest config.
+  An unregister in that window starts none.
+- Replace reply text now describes what actually happens.
+
 ## [0.5.1] - 2026-10-17
 
 ### Fixed

@@ -511,8 +511,10 @@ describe('Supervisor — live reload', () => {
     h.supervisor.start()
     const oldProc = h.source.spawned[0]!
     h.supervisor.reload([evt({ id: 'a', target: 'new-target' })]) // same key, new target
-    // Old child stopped, fresh one spawned.
+    // Old child stopped; the fresh one spawns only once the old one is gone.
     expect(oldProc.kills).toEqual(['SIGTERM'])
+    expect(h.source.spawned.length).toBe(1)
+    oldProc.emitExit(null, 'SIGTERM')
     expect(h.source.spawned.length).toBe(2)
     expect(h.logs.some(l => l.evt === 'reload' && l.fields?.replaced === 1)).toBe(true)
     // Lines now forward to the NEW target.
@@ -528,6 +530,7 @@ describe('Supervisor — live reload', () => {
     const h = harness([evt({ id: 'a', script: 'tail -F /tmp/old.log', target: 'a' })])
     h.supervisor.start()
     h.supervisor.reload([evt({ id: 'a', script: 'tail -F /tmp/new.log', target: 'a' })])
+    h.source.spawned[0]!.emitExit(null, 'SIGTERM')
     expect(h.source.spawned.length).toBe(2)
     expect(h.source.current!.args).toEqual(['-c', 'tail -F /tmp/new.log'])
   })
@@ -536,10 +539,99 @@ describe('Supervisor — live reload', () => {
     const h = harness([evt({ id: 'a', target: 'a' })]) // no heartbeat
     h.supervisor.start()
     h.supervisor.reload([evt({ id: 'a', target: 'a', heartbeatSec: 10 })])
+    h.source.spawned[0]!.emitExit(null, 'SIGTERM')
     expect(h.source.spawned.length).toBe(2)
     // Silence past the new window → hang detection kicks in on the fresh child.
     h.clock.advance(10000)
     expect(h.logs.some(l => l.evt === 'watcher-heartbeat-timeout')).toBe(true)
+  })
+
+  // --- watcher-replace-leak (2026-10-22): at most one script tree per owner:id ---
+
+  test('forced restart: same-id register with IDENTICAL config still restarts the script', () => {
+    const h = harness([evt({ id: 'a', target: 'a' })])
+    h.supervisor.start()
+    const oldProc = h.source.spawned[0]!
+    const key = 'arthur:a'
+    h.supervisor.reload([evt({ id: 'a', target: 'a' })], { restart: [key] })
+    expect(oldProc.kills).toEqual(['SIGTERM'])
+    expect(h.source.spawned.length).toBe(1) // new waits for old to be gone
+    oldProc.emitExit(null, 'SIGTERM')
+    expect(h.source.spawned.length).toBe(2)
+    expect(h.logs.some(l => l.evt === 'reload' && l.fields?.replaced === 1)).toBe(true)
+  })
+
+  test('restart of one key leaves other keys untouched', () => {
+    const h = harness([evt({ id: 'a', target: 'a' }), evt({ id: 'b', target: 'b' })])
+    h.supervisor.start()
+    const [pa, pb] = h.source.spawned
+    h.supervisor.reload([evt({ id: 'a', target: 'a' }), evt({ id: 'b', target: 'b' })], { restart: ['arthur:a'] })
+    expect(pa!.kills).toEqual(['SIGTERM'])
+    expect(pb!.kills.length).toBe(0)
+  })
+
+  test('replace: old ignores SIGTERM → SIGKILL after grace; new starts only after old exit', () => {
+    const h = harness([evt({ id: 'a', script: 'v1', target: 'a' })])
+    h.supervisor.start()
+    const oldProc = h.source.spawned[0]!
+    h.supervisor.reload([evt({ id: 'a', script: 'v2', target: 'a' })])
+    h.clock.advance(2999)
+    expect(oldProc.kills).toEqual(['SIGTERM'])
+    expect(h.source.spawned.length).toBe(1)
+    h.clock.advance(1)
+    expect(oldProc.kills).toEqual(['SIGTERM', 'SIGKILL'])
+    expect(h.source.spawned.length).toBe(1)
+    oldProc.emitExit(null, 'SIGKILL')
+    expect(h.source.spawned.length).toBe(2)
+    expect(h.source.current!.args).toEqual(['-c', 'v2'])
+  })
+
+  test('replace: old exit never observed even after SIGKILL → forced start with loud log', () => {
+    const h = harness([evt({ id: 'a', script: 'v1', target: 'a' })])
+    h.supervisor.start()
+    h.supervisor.reload([evt({ id: 'a', script: 'v2', target: 'a' })])
+    h.clock.advance(3000 + 2000)
+    expect(h.logs.some(l => l.evt === 'watcher-stop-unconfirmed')).toBe(true)
+    expect(h.source.spawned.length).toBe(2)
+  })
+
+  test('two replaces while old is still dying → exactly ONE new process, running the LATEST config', () => {
+    const h = harness([evt({ id: 'a', script: 'v1', target: 'a' })])
+    h.supervisor.start()
+    const oldProc = h.source.spawned[0]!
+    h.supervisor.reload([evt({ id: 'a', script: 'v2', target: 'a' })])
+    h.supervisor.reload([evt({ id: 'a', script: 'v3', target: 'a' })])
+    expect(h.source.spawned.length).toBe(1)
+    oldProc.emitExit(null, 'SIGTERM')
+    expect(h.source.spawned.length).toBe(2)
+    expect(h.source.current!.args).toEqual(['-c', 'v3'])
+    h.clock.advance(120000)
+    expect(h.source.spawned.length).toBe(2)
+  })
+
+  test('replace then unregister while old is dying → zero new processes', () => {
+    const h = harness([evt({ id: 'a', script: 'v1', target: 'a' })])
+    h.supervisor.start()
+    const oldProc = h.source.spawned[0]!
+    h.supervisor.reload([evt({ id: 'a', script: 'v2', target: 'a' })])
+    h.supervisor.reload([])
+    oldProc.emitExit(null, 'SIGTERM')
+    h.clock.advance(120000)
+    expect(h.source.spawned.length).toBe(1)
+  })
+
+  test('back-to-back replaces each wait for the previous process', () => {
+    const h = harness([evt({ id: 'a', script: 'v1', target: 'a' })])
+    h.supervisor.start()
+    h.supervisor.reload([evt({ id: 'a', script: 'v2', target: 'a' })])
+    h.source.spawned[0]!.emitExit(null, 'SIGTERM')
+    const p2 = h.source.spawned[1]!
+    h.supervisor.reload([evt({ id: 'a', script: 'v3', target: 'a' })])
+    expect(p2.kills).toEqual(['SIGTERM'])
+    expect(h.source.spawned.length).toBe(2)
+    p2.emitExit(null, 'SIGTERM')
+    expect(h.source.spawned.length).toBe(3)
+    expect(h.source.current!.args).toEqual(['-c', 'v3'])
   })
 
   test('reload removes a GONE watcher: SIGTERM, drop, no respawn', () => {
@@ -633,6 +725,7 @@ describe('Supervisor — escalation handoff', () => {
     h.supervisor.reload([evt({ id: 'a', target: 'a', fallback: ['boris'] })])
     // Config differs (fallback) → live replace, not a silent no-op.
     expect(oldProc.kills).toEqual(['SIGTERM'])
+    oldProc.emitExit(null, 'SIGTERM')
     expect(h.source.spawned.length).toBe(2)
     h.source.current!.emitStdout('sig\n')
     expect(h.transport.jobs.at(-1)!.fallbacks).toEqual(['boris'])

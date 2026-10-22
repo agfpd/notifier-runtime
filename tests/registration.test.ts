@@ -48,6 +48,18 @@ function profileOf(files: Record<string, string>, cwd: string): any {
   return p in files ? JSON.parse(files[p]!) : undefined
 }
 
+describe('handleEnvelope — register asks for a restart of its own key', () => {
+  test('register passes restart=[owner:id] to reloadCb (identical re-register must restart)', () => {
+    const { store } = makeFs({ '/reg/index.json': REGISTRY })
+    const transport = new FakeTransport()
+    const calls: Array<{ restart?: string[] } | undefined> = []
+    const body = JSON.stringify({ id: 'beat', when: '@every 30m', message: 'alive', target: 'boris' })
+    handleEnvelope(env({ message: body }), 'timer', { store, transport, reloadCb: o => calls.push(o) })
+    handleEnvelope(env({ message: body }), 'timer', { store, transport, reloadCb: o => calls.push(o) })
+    expect(calls).toEqual([{ restart: ['boris:beat'] }, { restart: ['boris:beat'] }])
+  })
+})
+
 describe('handleEnvelope — register (timer)', () => {
   test('writes the trigger into the REQUESTER profile with owner=from-personality and replies OK', () => {
     const { files, store, writes } = makeFs({ '/reg/index.json': REGISTRY })

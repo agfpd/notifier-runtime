@@ -229,6 +229,18 @@ describe('killTree (unit)', () => {
     expect(got).toEqual([11, 12])
   })
 
+  test('escalation re-signals pids KNOWN from an earlier snapshot (reparented orphans)', () => {
+    const sent: string[] = []
+    // Root 10 already gone: fresh table no longer links 11/12 to it.
+    const got = killTree(10, 'SIGKILL', () => sent.push('root'), {
+      table: () => new Map([[1, [11, 12]]]),
+      signal: (pid, sig) => sent.push(`${pid}:${sig}`),
+      known: [11, 12],
+    })
+    expect(sent).toEqual(['root', '11:SIGKILL', '12:SIGKILL'])
+    expect(got).toEqual([11, 12])
+  })
+
   test('no ps → falls back to root-only kill', () => {
     let rootKilled = false
     const got = killTree(10, 'SIGKILL', () => (rootKilled = true), { table: () => null })

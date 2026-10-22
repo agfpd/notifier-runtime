@@ -123,7 +123,14 @@ export function killTree(
   rootPid: number | undefined,
   signal: NodeJS.Signals,
   killRoot: () => void,
-  deps: { table?: () => Map<number, number[]> | null; signal?: (pid: number, sig: NodeJS.Signals) => void } = {},
+  deps: {
+    table?: () => Map<number, number[]> | null
+    signal?: (pid: number, sig: NodeJS.Signals) => void
+    // Pids seen in this tree by an EARLIER kill (SIGTERM snapshot). After the root
+    // dies its children reparent to pid 1 and vanish from a fresh descendant walk,
+    // so an escalating SIGKILL must re-signal them explicitly.
+    known?: number[]
+  } = {},
 ): number[] {
   if (rootPid === undefined) {
     killRoot()
@@ -131,6 +138,7 @@ export function killTree(
   }
   const table = (deps.table ?? (() => readProcessTable()))()
   const descendants = table ? descendantsOf(rootPid, table) : []
+  for (const pid of deps.known ?? []) if (pid !== rootPid && !descendants.includes(pid)) descendants.push(pid)
   killRoot()
   const send = deps.signal ?? ((pid, sig) => process.kill(pid, sig))
   for (const pid of descendants) {
@@ -173,6 +181,7 @@ export function nodeProcessSource(): ProcessSource {
       // node emits 'error' (e.g. spawn ENOENT) separately from 'exit'. Treat a
       // spawn failure as an exit so the supervisor's restart/crashloop logic sees
       // it uniformly (a script that cannot even start is a failure like any other).
+      const knownTree = new Set<number>()
       let exited = false
       const finalize = (code: number | null, signal: string | null) => {
         if (exited) return
@@ -196,7 +205,11 @@ export function nodeProcessSource(): ProcessSource {
           exitCb = cb
         },
         kill(signal?: NodeJS.Signals) {
-          killTree(child.pid, signal ?? 'SIGTERM', () => child.kill(signal))
+          const sig = signal ?? 'SIGTERM'
+          // child.kill is a no-op once node saw the root exit; the tree may still
+          // hold reparented descendants, which `known` covers.
+          const seen = killTree(child.pid, sig, () => child.kill(sig), { known: [...knownTree] })
+          for (const pid of seen) knownTree.add(pid)
         },
         get pid() {
           return child.pid

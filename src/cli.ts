@@ -262,11 +262,11 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
 
   // Live-reload: a registration message re-projects the EVENT triggers and
   // diffs them into the running supervisor (surviving watchers keep running).
-  installEnvelopeReader('watcher', echoGuard, () => {
+  installEnvelopeReader('watcher', echoGuard, opts => {
     const { ok, errors } = loadTriggers()
     for (const error of errors) log('trigger-load-error', { error })
     const event = ok.filter((t): t is EventTrigger => t.role === 'event')
-    supervisor.reload(event)
+    supervisor.reload(event, { restart: opts?.restart })
     lint(event)
   })
 
@@ -313,7 +313,11 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
 // `reloadCb` re-runs loadTriggers and diffs the fresh projection into the
 // running engine (Scheduler.reload / Supervisor.reload) — that is the live
 // pick-up of a just-registered trigger with no restart.
-function installEnvelopeReader(role: Role, echoGuard: EchoGuard, reloadCb: () => void): void {
+function installEnvelopeReader(
+  role: Role,
+  echoGuard: EchoGuard,
+  reloadCb: (opts?: { restart?: string[] }) => void,
+): void {
   const store = new PeerProfileStore()
   // Registration replies are deliveries too — guard them for echo recognition.
   const transport = echoGuard.wrapSync(makeIapTransport({ cwd: process.cwd(), env: process.env }))

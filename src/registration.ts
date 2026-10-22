@@ -43,7 +43,9 @@ export interface RegistrationDeps {
   // Re-project + live-reload the running engine. Called once after every
   // successful MUTATION (register/unregister), never after a pure list or a
   // validation failure. Errors here are caught + logged, never thrown back.
-  reloadCb?: () => void
+  // `restart`: owner:id keys to restart even when their config is unchanged
+  // (a same-id register is an explicit request to run the trigger afresh).
+  reloadCb?: (opts?: { restart?: string[] }) => void
   log?: (evt: string, fields?: Record<string, unknown>) => void
   // Injected by tests for deterministic script-existence checks; passed straight
   // through to parseRegistration.
@@ -300,7 +302,7 @@ function dispatch(
   }
 
   const outcome = deps.store.upsert(cwd, stored) // 'added' | 'replaced'
-  const reloaded = runReload(deps, log)
+  const reloaded = runReload(deps, log, { restart: [`${requester}:${stored.id}`] })
   const verb = outcome === 'replaced' ? 'replaced' : 'registered'
   // role-aware liveness clause: timers fire on a schedule, watchers stream now.
   // On a same-id replace, say explicitly that the replace reached the LIVE
@@ -311,7 +313,7 @@ function dispatch(
     outcome === 'replaced'
       ? role === 'timer'
         ? 'Replace applied live — it fires on the new config, no restart needed.'
-        : 'Replace applied live — old script stopped, new config streaming now, no restart needed.'
+        : 'Replace applied live — old script tree is stopped (SIGTERM, SIGKILL after 3s); the new script starts only after the old one is gone — even if the script text is unchanged. No restart needed.'
       : role === 'timer'
         ? 'It fires on schedule — no restart needed.'
         : 'It is streaming now — no restart needed.'
@@ -331,10 +333,14 @@ function dispatch(
   return { outcome: outcome === 'replaced' ? 'replaced' : 'registered', reply: msg, reloaded }
 }
 
-function runReload(deps: RegistrationDeps, log: (evt: string, fields?: Record<string, unknown>) => void): boolean {
+function runReload(
+  deps: RegistrationDeps,
+  log: (evt: string, fields?: Record<string, unknown>) => void,
+  opts?: { restart?: string[] },
+): boolean {
   if (!deps.reloadCb) return false
   try {
-    deps.reloadCb()
+    deps.reloadCb(opts)
     return true
   } catch (err) {
     // A reload failure must not corrupt the registration outcome — the profile

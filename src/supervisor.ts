@@ -6,6 +6,8 @@ import {
   FLOOD_THRESHOLD,
   FLOOD_WINDOW_MS,
   HEALTHY_RUN_MS,
+  STOP_FORCE_MS,
+  STOP_GRACE_MS,
 } from './constants.ts'
 import type { EscalationJob } from './escalation.ts'
 import type { ProcessHandle, ProcessSource } from './processSource.ts'
@@ -42,6 +44,8 @@ export interface SupervisorOpts {
   healthyRunMs?: number
   floodThreshold?: number
   floodWindowMs?: number
+  stopGraceMs?: number
+  stopForceMs?: number
 }
 
 // Reload diff key: a watcher's identity within the running set is owner:id.
@@ -83,6 +87,10 @@ class Watcher {
   private failureTimes: number[] = []
   // Wall-clock of the current spawn → run duration on exit (healthy-run reset).
   private spawnedAt = 0
+  // Stop escalation timer (SIGTERM → SIGKILL → forced gone) and the callbacks
+  // waiting for this watcher's process to be confirmed dead.
+  private stopTimer?: () => void
+  private goneWaiters: Array<() => void> = []
   // Did the current run forward at least one line? A line is the strongest
   // "healthy" signal (the script is doing its job), independent of duration.
   private emittedLine = false
@@ -119,15 +127,45 @@ class Watcher {
 
   // Graceful shutdown: cancel any pending backoff/heartbeat timers and kill the
   // live child. `stopped` guards onExit so the resulting exit does NOT respawn.
-  stop(): void {
+  //
+  // `onGone` fires once the script is confirmed dead (its exit observed) — or
+  // immediately if nothing is running. The Supervisor uses it to start a
+  // replacement for the same owner:id only AFTER the old process is gone
+  // (invariant: at most one live script tree per key). SIGTERM is escalated to
+  // SIGKILL of the whole remembered tree after stopGraceMs; if even that exit is
+  // not observed within stopForceMs, onGone fires anyway with a loud log so a
+  // wedged process can never block the key forever.
+  stop(onGone?: () => void): void {
     this.stopped = true
     this.cancelBackoff?.()
     this.cancelBackoff = undefined
     this.clearHeartbeat()
-    if (this.handle) {
-      this.deps.log('watcher-stop', { id: this.id, pid: this.handle.pid })
-      this.handle.kill('SIGTERM')
+    if (!this.handle) {
+      onGone?.()
+      return
     }
+    if (onGone) this.goneWaiters.push(onGone)
+    if (this.stopTimer) return // already stopping — just queue the waiter
+    const pid = this.handle.pid
+    this.deps.log('watcher-stop', { id: this.id, pid })
+    this.handle.kill('SIGTERM')
+    this.stopTimer = this.deps.setTimer(this.cfg.stopGraceMs, () => {
+      if (!this.handle) return
+      this.deps.log('watcher-stop-escalate', { id: this.id, pid, signal: 'SIGKILL' })
+      this.handle.kill('SIGKILL')
+      this.stopTimer = this.deps.setTimer(this.cfg.stopForceMs, () => {
+        this.stopTimer = undefined
+        if (!this.handle) return
+        this.deps.log('watcher-stop-unconfirmed', { id: this.id, pid })
+        this.flushGone()
+      })
+    })
+  }
+
+  private flushGone(): void {
+    const waiters = this.goneWaiters
+    this.goneWaiters = []
+    for (const w of waiters) w()
   }
 
   private spawn(): void {
@@ -231,7 +269,12 @@ class Watcher {
     })
 
     // Graceful shutdown already killed it → do NOT restart (no zombie respawn).
-    if (this.stopped) return
+    if (this.stopped) {
+      this.stopTimer?.()
+      this.stopTimer = undefined
+      this.flushGone()
+      return
+    }
 
     // ANY exit of a long-lived watcher is a failure — even code 0. A monitor that
     // is supposed to run forever exiting cleanly is still "it stopped working".
@@ -394,6 +437,10 @@ export class Supervisor {
   private deps: SupervisorDeps
   private cfg: Required<SupervisorOpts>
   private started = false
+  // Per key: how many stopped watchers still have a live process, and the
+  // replacement waiting for that count to reach zero.
+  private dying = new Map<string, number>()
+  private pendingStart = new Map<string, Watcher>()
 
   constructor(triggers: EventTrigger[], deps: SupervisorDeps, opts: SupervisorOpts = {}) {
     this.deps = deps
@@ -405,6 +452,8 @@ export class Supervisor {
       healthyRunMs: opts.healthyRunMs ?? HEALTHY_RUN_MS,
       floodThreshold: opts.floodThreshold ?? FLOOD_THRESHOLD,
       floodWindowMs: opts.floodWindowMs ?? FLOOD_WINDOW_MS,
+      stopGraceMs: opts.stopGraceMs ?? STOP_GRACE_MS,
+      stopForceMs: opts.stopForceMs ?? STOP_FORCE_MS,
     }
     for (const trigger of triggers) {
       const key = watcherKey(trigger)
@@ -438,9 +487,20 @@ export class Supervisor {
   //     respawn) and drop it from the map.
   // A reload before start() just adjusts the set; start() later spawns whatever
   // is present.
-  reload(triggers: EventTrigger[]): void {
+  //
+  // `restart`: keys whose watcher must be restarted even when the config is
+  // identical. A same-id register is an explicit request to run the script
+  // afresh (the script text may be unchanged while the code it runs changed on
+  // disk — watcher-replace-leak 2026-10-22: an identical-config replace was a
+  // silent no-op while the reply claimed "old script stopped").
+  //
+  // Ordering invariant: for a key, the replacement starts only after EVERY
+  // previously stopped watcher of that key has its process confirmed gone
+  // (Watcher.stop onGone). At most one script tree per owner:id is ever alive.
+  reload(triggers: EventTrigger[], opts: { restart?: string[] } = {}): void {
     const next = new Map<string, EventTrigger>()
     for (const trigger of triggers) next.set(watcherKey(trigger), trigger) // last wins on dup key
+    const forced = new Set(opts.restart ?? [])
 
     let added = 0
     let removed = 0
@@ -448,31 +508,59 @@ export class Supervisor {
     // Remove watchers whose key disappeared.
     for (const [key, watcher] of [...this.watchers]) {
       if (!next.has(key)) {
-        watcher.stop()
+        this.retire(key, watcher)
         this.watchers.delete(key)
         removed++
       }
     }
-    // Add watchers for new keys; replace changed ones; leave identical ones untouched.
+    // Add watchers for new keys; replace changed (or force-restarted) ones;
+    // leave identical ones untouched.
     for (const [key, trigger] of next) {
       const existing = this.watchers.get(key)
       if (existing) {
-        if (sameConfig(existing.trigger, trigger)) continue
-        // Same-id replace → apply to the LIVE state: stop old, run new. The old
-        // child's eventual exit hits the stop latch (no zombie respawn); the
-        // fresh Watcher starts with a clean backoff/heartbeat state.
-        existing.stop()
+        if (!forced.has(key) && sameConfig(existing.trigger, trigger)) continue
+        this.retire(key, existing)
         replaced++
       }
       const watcher = new Watcher(key, trigger, this.deps, this.cfg)
       this.watchers.set(key, watcher)
       // If the supervisor is already running, a freshly-added/replaced watcher
-      // starts immediately (a sleeping requester's just-registered watcher fires
-      // without a restart). Before start() it waits for start().
-      if (this.started) watcher.start()
+      // starts as soon as its key has no dying predecessor (a sleeping
+      // requester's just-registered watcher fires without a restart). Before
+      // start() it waits for start().
+      if (this.started) this.startWhenClear(key, watcher)
       if (!existing) added++
     }
     this.deps.log('reload', { added, removed, replaced, total: this.watchers.size })
+  }
+
+  // Stop a watcher and track it as "dying" for its key until its process is gone.
+  private retire(key: string, watcher: Watcher): void {
+    if (this.pendingStart.get(key) === watcher) this.pendingStart.delete(key)
+    this.dying.set(key, (this.dying.get(key) ?? 0) + 1)
+    watcher.stop(() => {
+      const left = (this.dying.get(key) ?? 1) - 1
+      if (left > 0) {
+        this.dying.set(key, left)
+        return
+      }
+      this.dying.delete(key)
+      const pending = this.pendingStart.get(key)
+      if (pending) {
+        this.pendingStart.delete(key)
+        this.deps.log('watcher-start-after-stop', { id: key })
+        pending.start()
+      }
+    })
+  }
+
+  private startWhenClear(key: string, watcher: Watcher): void {
+    if ((this.dying.get(key) ?? 0) > 0) {
+      this.pendingStart.set(key, watcher)
+      this.deps.log('watcher-start-deferred', { id: key, reason: 'previous script still stopping' })
+      return
+    }
+    watcher.start()
   }
 
   // Graceful stop: kill every child and suppress all restarts (no zombie
