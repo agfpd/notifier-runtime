@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-26
+
+### Fixed
+
+- Probe check paths literally, preserving OS symlink/`..` traversal in both explicit paths and PATH entries. Lexical normalization could otherwise validate a different file from the one executed. Includes the timer check preflight and contract updates below; 0.5.3 was tagged but not published after this edge case was caught in pre-release verification.
+
 ## [0.5.3] - 2026-10-26
 
 ### Fixed

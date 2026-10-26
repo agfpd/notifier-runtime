@@ -125,4 +125,19 @@ describe('check registration preflight — no execution or shell parsing', () =>
     expect(runCheck(check).send).toBe(false)
     expect(runCheck(check).error).toBeDefined()
   })
+
+  test('symlink/.. is probed literally, exactly as the OS executes it (also in PATH)', () => {
+    const base = join(work, 'symlink-dotdot')
+    mkdirSync(`${base}/real/sub`, { recursive: true })
+    symlinkSync(`${base}/real/sub`, `${base}/link`)
+    writeFileSync(`${base}/gate`, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    const check = `${base}/link/../gate`
+    expect(validateCheck(check)).toContain('not found')
+    expect(validateCheck('gate', { path: `${base}/link/..` })).toContain('not found')
+    expect(runCheck(check).send).toBe(false)
+    writeFileSync(`${base}/real/gate`, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    expect(validateCheck(check)).toBeUndefined()
+    expect(validateCheck('gate', { path: `${base}/link/..` })).toBeUndefined()
+    expect(runCheck(check).send).toBe(true)
+  })
 })

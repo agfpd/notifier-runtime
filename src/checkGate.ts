@@ -1,6 +1,6 @@
 import { spawnSync } from 'child_process'
 import { accessSync, constants, statSync } from 'fs'
-import { delimiter, resolve } from 'path'
+import { delimiter, isAbsolute } from 'path'
 import { DEFAULT_CHECK_TIMEOUT_MS } from './constants.ts'
 
 // Registration preflight only: inspect the whole literal name, never execute it
@@ -10,9 +10,12 @@ export function validateCheck(check: string, opts: { cwd?: string; path?: string
   const hint = 'check must name one executable file (no arguments or shell expressions); put the condition in a chmod +x script with a shebang. Paths with spaces are literal, without extra shell quotes.'
   if (!check || check.includes('\0')) return `invalid check: ${JSON.stringify(check)}; ${hint}`
   const cwd = opts.cwd ?? process.cwd()
+  // Do not normalize '..': the OS traverses it AFTER following symlinks.
+  // Lexical path.resolve/join could probe a different file than spawn executes.
+  const inCwd = (path: string) => isAbsolute(path) ? path : `${cwd}/${path}`
   const candidates = check.includes('/')
-    ? [resolve(cwd, check)]
-    : (opts.path ?? process.env.PATH ?? '/usr/bin:/bin').split(delimiter).map(dir => resolve(cwd, dir, check))
+    ? [inCwd(check)]
+    : (opts.path ?? process.env.PATH ?? '/usr/bin:/bin').split(delimiter).map(dir => `${inCwd(dir || '.')}/${check}`)
   let problem = 'not found'
   for (const path of candidates) {
     try {
