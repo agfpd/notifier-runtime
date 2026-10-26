@@ -61,6 +61,31 @@ describe('handleEnvelope — register asks for a restart of its own key', () => 
 })
 
 describe('handleEnvelope — register (timer)', () => {
+  test('invalid check rejects before write/reload, including same-id replace', () => {
+    for (const existing of [false, true]) {
+      const { files, store, writes } = makeFs({ '/reg/index.json': REGISTRY })
+      const transport = new FakeTransport()
+      let reloads = 0
+      const deps = { store, transport, reloadCb: () => reloads++ }
+      const config = { id: 'gated', when: '@every 30m', message: 'original', target: 'self', check: '/usr/bin/true' }
+      if (existing) handleEnvelope(env({ message: JSON.stringify(config) }), 'timer', deps)
+      const before = JSON.stringify(files)
+      writes.length = 0
+      reloads = 0
+      for (const check of ['/notifier-no-such-check', '/bin/test "$(/bin/date +%Y-%m-%d)" = 2026-10-26']) {
+        const res = handleEnvelope(env({ message: JSON.stringify({ ...config, check, message: 'bad' }) }), 'timer', deps)
+        expect(res.outcome).toBe('rejected')
+        expect(res.reloaded).toBe(false)
+        expect(res.reply).toContain('no arguments or shell expressions')
+        expect(res.reply).toContain('Registration rejected: no trigger added/replaced')
+        expect(transport.sent.at(-1)!.message).toBe(res.reply)
+        expect(JSON.stringify(files)).toBe(before)
+        expect(writes).toEqual([])
+        expect(reloads).toBe(0)
+      }
+    }
+  })
+
   test('writes the trigger into the REQUESTER profile with owner=from-personality and replies OK', () => {
     const { files, store, writes } = makeFs({ '/reg/index.json': REGISTRY })
     const transport = new FakeTransport()

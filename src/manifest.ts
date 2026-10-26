@@ -98,7 +98,7 @@ export function runtimeManifestPath(env: NodeJS.ProcessEnv = process.env): strin
  *  the live format"). */
 export const PEER_BLURB: Record<DeclaredPeer, string> = {
   timer:
-    'Scheduler peer: sends `message` on a schedule (arrives in a NEW session — self-contained). send_to_peer(timer, JSON): when (cron "0 9 * * *"|"@every 30m"), message, target (peer|"self"), check? (fire if exit 0), fallback? (undelivered→owner→backstop), id? (none→auto; same=replace), topic?. Send "help" (plain text) → it REPLIES by IAP with the live format + YOUR triggers (owner=requester). Manage: {"cmd":"list"|"register"|"unregister",…}.',
+    'Scheduler peer: sends `message` on cron/interval (NEW session; self-contained). send_to_peer(timer, JSON): when ("0 9 * * *"|"@every 30m"), message, target (peer|"self"), check? (one executable; no args/shell; exit 0→fire; validated without running), fallback? (undelivered→owner→backstop), id? (none→auto; same=replace), topic?. "help" → live format + YOUR triggers. Manage: {"cmd":"list"|"register"|"unregister",…}.',
   watcher:
     'Watcher peer: runs a long-lived script; each stdout line → signal to target verbatim (line IS the payload). send_to_peer(watcher, JSON): script, target (peer|"self"), heartbeatSec? (silence→restart+alert owner), fallback? (undelivered→owner→backstop), id? (none→auto; same=replace), topic?. Send "help" (plain text) → it REPLIES by IAP with the live format + YOUR triggers (owner=requester). Manage: {"cmd":"list"|"register"|"unregister",…}.',
 }

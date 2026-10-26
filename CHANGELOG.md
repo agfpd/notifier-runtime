@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-26
+
+### Fixed
+
+- **Timer check preflight:** registration now rejects a `check` that cannot resolve to an executable regular file in timer's cwd/PATH. Rejected add/replace writes nothing and does not reload the engine; an existing trigger is preserved. This inspects filesystem metadata and execute permission, never runs the gate.
+- **Explicit check contract:** one literal executable name, no arguments or shell syntax. Paths with spaces, symlinks, relative paths and resolvable bare names remain supported. Help, registry blurb and EN/RU docs explain wrapper scripts, timer's environment and the limits of preflight. Existing stored triggers and fail-closed execution semantics are unchanged.
+- Tests cover the reported shell-expression failure, missing/non-executable/directory/dangling paths, literal spaces/metacharacters, PATH resolution, no registration-time side effects, rejected replacement preservation and post-registration disappearance.
+
 ## [0.5.2] - 2026-10-22
 
 ### Fixed

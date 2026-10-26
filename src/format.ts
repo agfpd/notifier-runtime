@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'fs'
 import { NAME_RE } from './constants.ts'
 import { parseWhen } from './when.ts'
+import { validateCheck } from './checkGate.ts'
 
 // ── Registration format — SINGLE SOURCE OF TRUTH ────────────────────────────
 //
@@ -15,11 +16,12 @@ import { parseWhen } from './when.ts'
 // SAME strings, the examples a peer reads in its description are exactly the
 // examples the test proves valid — the self-doc can never drift from the parser.
 //
-// VALIDATION IS FORMAT-ONLY: JSON parses, required fields
-// present, `when` parses (timer), the watcher `script` path exists+executable,
+// VALIDATION IS STRUCTURAL + FILE AVAILABILITY, NOT EXECUTION: JSON parses, required fields
+// present, `when` parses and `check` resolves to an executable file (timer),
+// the watcher `script` path exists+executable,
 // `target` is a resolvable name or "self", `id` is a valid name if present,
 // `topic` within the length limit. We NEVER execute the script or run the
-// schedule — path existence is a format check, not a behaviour check.
+// schedule — file availability is not a behaviour check.
 
 export type Role = 'timer' | 'watcher'
 
@@ -237,6 +239,8 @@ function parseTimerRegister(obj: Record<string, unknown>): ParseResult {
   if (obj.check !== undefined) {
     const c = asString(obj.check)
     if (!c || c.length === 0) return teach('timer', '"check" must be a non-empty path when present')
+    const checkErr = validateCheck(c)
+    if (checkErr) return teach('timer', `${checkErr}\nRegistration rejected: no trigger added/replaced; any existing trigger is unchanged.`)
     check = c
   }
 
@@ -356,7 +360,10 @@ export function describeFormat(role: Role): string {
       '  • when: 5-field cron ("0 9 * * *") or interval ("@every 30m").',
       '  • message arrives in a NEW session → keep it self-contained.',
       '  • target "self" → your own profile (the requester). id optional (none → auto content-hash).',
-      '  • check: a path gate — fire only if the script exits 0.',
+      '  • check: one executable file, no arguments or shell expressions; fire only on exit 0.',
+      '    Use a chmod +x script with a shebang for conditions. Paths with spaces need no shell quotes.',
+      '    Registration checks file + execute permission without running it; invalid check rejects add/replace.',
+      '    Bare names use timer PATH; relative paths use timer cwd (not yours). Prefer absolute paths.',
       '  • fallback: escalation chain — if target stays unreachable after retries, the signal',
       '    goes to your fallback peer(s), then to you (owner), then to the global backstop if set. Never silently dropped.',
       '    A human (e.g. arthur) is NOT a valid link — the notifier has no telegram face; use a telegram-faced agent.',

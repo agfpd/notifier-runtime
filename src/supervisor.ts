@@ -175,7 +175,7 @@ class Watcher {
     this.emittedLine = false
 
     // The script is run through a shell so authors can use a full command line
-    // ("tail -F log | grep ERROR"), matching the cron `check` ergonomics. stdin
+    // ("tail -F log | grep ERROR"), unlike timer.check (one executable). stdin
     // is ignored by the source (stdio ['ignore','pipe','pipe']).
     const handle = this.deps.processSource.spawn('/bin/sh', ['-c', this.trigger.script])
     this.handle = handle

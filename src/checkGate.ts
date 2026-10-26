@@ -1,5 +1,34 @@
 import { spawnSync } from 'child_process'
+import { accessSync, constants, statSync } from 'fs'
+import { delimiter, resolve } from 'path'
 import { DEFAULT_CHECK_TIMEOUT_MS } from './constants.ts'
+
+// Registration preflight only: inspect the whole literal name, never execute it
+// or split it into shell tokens. Resolve in the TIMER's environment, like spawn.
+// This cannot prove the interpreter/dependencies/condition will work at fire time.
+export function validateCheck(check: string, opts: { cwd?: string; path?: string } = {}): string | undefined {
+  const hint = 'check must name one executable file (no arguments or shell expressions); put the condition in a chmod +x script with a shebang. Paths with spaces are literal, without extra shell quotes.'
+  if (!check || check.includes('\0')) return `invalid check: ${JSON.stringify(check)}; ${hint}`
+  const cwd = opts.cwd ?? process.cwd()
+  const candidates = check.includes('/')
+    ? [resolve(cwd, check)]
+    : (opts.path ?? process.env.PATH ?? '/usr/bin:/bin').split(delimiter).map(dir => resolve(cwd, dir, check))
+  let problem = 'not found'
+  for (const path of candidates) {
+    try {
+      if (!statSync(path).isFile()) {
+        problem = 'not a regular file'
+        continue
+      }
+      accessSync(path, constants.X_OK)
+      return undefined
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') problem = code ?? 'inaccessible'
+    }
+  }
+  return `check ${JSON.stringify(check)} is not executable by timer (${problem}); ${hint}`
+}
 
 // Result of evaluating a trigger's optional check-gate.
 //
@@ -17,7 +46,7 @@ export interface RunCheckOptions {
   timeoutMs?: number
 }
 
-// Evaluate a check command. No check → unconditional send. With a check:
+// Evaluate a literal executable name, without arguments or a shell. No check → unconditional send.
 //   exit 0    → send
 //   exit != 0 → skip (the condition is simply not met)
 // Fail-safe: ENOENT / not-executable / timeout / signal kill → skip + error.
@@ -31,6 +60,7 @@ export function runCheck(check: string | undefined, opts: RunCheckOptions = {}):
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
 
   const result = spawnSync(check, [], {
+    shell: false,
     timeout: timeoutMs,
     // We only need the exit status; capturing output as strings keeps any
     // diagnostics available without binary-buffer handling.

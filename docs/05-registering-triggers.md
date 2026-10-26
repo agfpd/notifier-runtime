@@ -63,7 +63,7 @@ Examples:
   …
 ```
 
-Validation is format-only: the JSON must parse, required fields must be present, a timer's `when` must parse, a watcher's `script` path (when it looks like a path) must exist and be executable, `target` must be `"self"` or a valid peer name. The runtime never runs your script or your schedule to validate it.
+Validation checks format and executable availability: the JSON must parse, required fields must be present, a timer's `when` must parse and its optional `check` must resolve to one executable regular file (no arguments/shell; see [03 — Timer](03-timer.md)), a watcher's `script` path (when it looks like a path) must exist and be executable, `target` must be `"self"` or a valid peer name. The runtime never runs your script, check, or schedule to validate it. A rejected add/replace writes nothing and does not reload the engine; any existing trigger is unchanged.
 
 ## Live reload — no restart
 
@@ -71,7 +71,7 @@ A registration takes effect immediately. The runtime re-reads the trigger set an
 
 - A new trigger is armed at once.
 - A removed trigger is dropped.
-- A surviving trigger keeps its state — a timer with an unchanged `when` keeps its place in the schedule; a watcher with unchanged config keeps running. Only what actually changed is re-armed or restarted.
+- A surviving timer with an unchanged `when` keeps its place in the schedule. Explicit watcher re-registration restarts that watcher even with identical config (so edits to its script take effect); unrelated unchanged watchers keep running.
 
 You never restart the runtime to pick up a trigger change.
 

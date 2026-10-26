@@ -60,7 +60,9 @@ If the runtime was down across one or more scheduled times — a host reboot, a 
 
 ## Gating: `check`
 
-A `check` is a command run just before the message would be sent. The message goes out only if the check exits `0`; any non-zero exit skips this fire silently. The convention is the shell's: `0` means "condition holds, send", like `test` or `grep -q`.
+A `check` names **one executable file**, run just before the message would be sent as `spawnSync(check, [])`: **no arguments and no shell**. The message goes out only if the executable exits `0`; a normal non-zero exit silently skips this fire.
+
+Use an absolute path. Bare executable names are also supported, resolved through the **timer process's `PATH`**; relative paths use **timer's working directory**, not the registering peer's. Paths containing spaces are valid: put the entire literal path in the JSON string, without extra shell quotes. There is no expansion of `~`, variables, substitutions, pipes, or redirects.
 
 ```
 send_to_peer(timer, {
@@ -71,7 +73,18 @@ send_to_peer(timer, {
 })
 ```
 
-The check is fail-safe: if the command can't be found, isn't executable, times out, or is killed by a signal, the fire is **skipped**, never sent, and the failure is logged loudly. A broken gate never produces a false alarm. The check has a 30-second timeout so a hung gate can't wedge the schedule.
+Registration (including same-id replace) checks that this literal name resolves to a regular file with execute permission for timer. A missing file, directory, non-executable file, or unresolved command line gets a teaching error, **not a registered/ready confirmation**. Nothing is added or replaced; an existing trigger remains unchanged. The gate is **never run during registration**. This is a filesystem preflight, not proof that the interpreter, dependencies, or condition work. Existing stored triggers are not migrated or removed by this registration check.
+
+For a condition needing arguments or shell syntax, create an executable script with a shebang, for example `/absolute/path/queue-nonempty`:
+
+```sh
+#!/bin/sh
+test -s /absolute/path/queue.txt
+```
+
+Make it executable (`chmod +x /absolute/path/queue-nonempty`) and register its path. `"check":"/bin/test -s /absolute/path/queue.txt"` is **not** a command line: timer would look for a file with that entire name, so registration rejects it. In contrast, `"check":"/absolute/path with spaces/queue-nonempty"` is valid if that exact file is executable. The script's environment is timer's environment; use absolute paths to its dependencies too.
+
+At fire time the check remains fail-safe: if it cannot run (including a file removed after registration), times out, or is killed by a signal, the fire is **skipped**, never sent, and the failure is logged loudly. The check has a 30-second timeout. A preflight cannot eliminate changes between registration and execution. See the [Node.js spawn contract](https://nodejs.org/api/child_process.html#child_processspawnsynccommand-args-options) and [execute-permission probe](https://nodejs.org/api/fs.html#fsaccesssyncpath-mode).
 
 ## Fields
 
@@ -80,7 +93,7 @@ The check is fail-safe: if the command can't be found, isn't executable, times o
 | `when` | yes | cron expression or `@every` interval |
 | `message` | yes | the text delivered to the target |
 | `target` | yes | the peer to message, or `"self"` for the registering peer |
-| `check` | no | a command; fire only if it exits `0` |
+| `check` | no | one executable file (no args/shell); fire only if it exits `0` |
 | `id` | no | a stable name for the trigger; omit and one is derived from the content |
 | `topic` | no | a short label carried on the signal (≤200 chars) |
 | `fallback` | no | escalation peer(s) if the target can't be reached — see [06 — Escalation](06-escalation.md) |
