@@ -77,8 +77,8 @@ export const STOP_FORCE_MS = 2_000
 // fallback chain (target → per-trigger fallback(s) → trigger owner → global
 // backstop); only after the whole chain is exhausted does it become a loud
 // `delivery-lost` + a durable dead-letter file. Semantics: "delivered to
-// someone alive" beats "delivered exactly to target"; at-least-once (a
-// duplicate alert is better than a lost one).
+// someone alive" beats "delivered exactly to target". Unknown native acceptance
+// is held and surfaced to the owner, never retried as a task.
 
 // Attempts per chain link (R). 2 = one immediate try + one retry, then the next
 // link — an emergency circuit must reach a live fallback in minutes, not retry

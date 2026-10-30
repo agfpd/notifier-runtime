@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-31
+
+### Added
+
+- Durable native acceptance for timer/watcher trigger deliveries: persist chain cursor and submitting/pending custody, correlate core `delivery-acceptance` events by deliveryId and recipient, retain an event inbox across restart, and advance the original fallback chain once on proven final refusal.
+- Unresolved delivery is surfaced to the trigger owner as an informational alert, never a replay/fallback task. Late native receipts still settle custody. CLI timeout, unfamiliar acknowledgements and restart during submission also become visible uncertainty rather than an unsafe retry; missing final events are surfaced after 180 seconds.
+
+### Fixed
+
+- Restart no longer blindly replays a signal whose submission may already have started. A flood breaker preserves on-wire custody instead of cancelling its correlation record.
+- Registration store, trigger projection and reachability honor `IAPEER_ROOT`, allowing truly isolated notifier fixtures without borrowing the host registry.
+
 ## [0.5.4] - 2026-10-26
 
 ### Fixed

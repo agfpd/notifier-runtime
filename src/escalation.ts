@@ -7,6 +7,7 @@ import {
   ESCALATION_RETRY_DELAY_MS,
 } from './constants.ts'
 import type { AsyncTransport, SendResult } from './transport.ts'
+import { MemoryAcceptanceStore, type AcceptanceEvent, type AcceptanceStore } from './acceptance.ts'
 
 // ── Delivery escalation ─────────────────────────────────────────────────────
 //
@@ -27,9 +28,9 @@ import type { AsyncTransport, SendResult } from './transport.ts'
 //     loss is impossible by construction: a signal is either delivered, or it
 //     sits in the spool as a dead-letter (status "lost") behind a loud
 //     `delivery-lost` log event.
-//   • Semantics: "delivered to someone alive" beats "delivered exactly to
-//     target"; at-least-once (a duplicate alert is better than a lost one —
-//     a re-drain after a crash may re-send an already-delivered signal).
+//   • Proven refusal may retry/fallback. Native custody (pending) is held by
+//     deliveryId; uncertain submission is surfaced to the owner, never replayed.
+//     Native ingestion is not business task completion.
 //   • Storm-proofing (2026-07-17 escalation-storm incident): a byte-identical
 //     copy of a signal that is still IN FLIGHT carries no new information —
 //     it is coalesced onto the in-flight entry (counter, no second chain) both
@@ -58,6 +59,8 @@ export interface EscalationJob {
   // Logging context merged into the success event so the 0.1.3 log-attribution
   // shape is preserved: fire → {owner, when, reason}, forward → {id}.
   meta?: Record<string, unknown>
+  // Internal deterministic id for an uncertainty notification, not a trigger id.
+  signalId?: string
 }
 
 export interface AttemptRecord {
@@ -89,6 +92,15 @@ export interface SpoolEntry {
   // loss has not been surfaced to anyone yet.
   reportedAt?: string
   meta?: Record<string, unknown>
+  cursor?: { link: number; attempt: number }
+  delivery?: {
+    phase: 'submitting' | 'pending' | 'unresolved'
+    deliveryId?: string
+    to: string
+    noticeQueued?: boolean
+    reason?: string
+    since?: string
+  }
 }
 
 // ── Spool ────────────────────────────────────────────────────────────────────
@@ -202,6 +214,7 @@ interface EscalatorDeps {
   now: () => Date
   // Spool-entry id source — injectable for deterministic tests.
   makeId?: () => string
+  acceptanceStore?: AcceptanceStore
   // Static dead-link predicate (reachability.ts): a reason string when `peer`
   // can NEVER be delivered by this notifier (human without a telegram face on
   // our side, model-less program peer), else null. Such a link is skipped
@@ -294,6 +307,7 @@ interface InflightRec {
   key: string
   cancelled: boolean
   promise: Promise<void>
+  running?: boolean
 }
 
 // Per-target delivery lane: at most ONE in-flight `iapeer send` per recipient.
@@ -323,6 +337,7 @@ export class Escalator {
   private readonly backstop: string
   private readonly lanes = new Lanes()
   private readonly makeId: () => string
+  private readonly acceptanceStore: AcceptanceStore
   // In-flight index by dedup key — the coalescing seam. An entry lives here
   // from deliver()/start() until its chain settles (delivered/lost/cancelled).
   private readonly inflight = new Map<string, InflightRec>()
@@ -334,6 +349,7 @@ export class Escalator {
     this.backstop = opts.backstop ?? DEFAULT_FALLBACK_TARGET
     this.makeId =
       deps.makeId ?? (() => `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`)
+    this.acceptanceStore = deps.acceptanceStore ?? new MemoryAcceptanceStore()
   }
 
   // Re-drain: re-run the chain for every pending spool entry (signals that were
@@ -349,7 +365,7 @@ export class Escalator {
     for (const entry of pending) {
       const key = entryKey(entry)
       const existing = this.inflight.get(key)
-      if (existing) {
+      if (existing && !entry.delivery && !existing.entry.delivery) {
         existing.entry.coalesced = (existing.entry.coalesced ?? 0) + 1 + (entry.coalesced ?? 0)
         this.deps.spool.update(existing.entry)
         this.deps.spool.remove(entry.id)
@@ -368,8 +384,12 @@ export class Escalator {
         intendedTarget: entry.target,
         attemptsSoFar: entry.attempts.length,
       })
-      this.launch(entry, key)
+      const indexedKey = existing ? `${key}|${entry.id}` : key
+      this.inflight.set(indexedKey, { entry, key: indexedKey, cancelled: false, promise: Promise.resolve() })
     }
+    // Index EVERYTHING before resuming: an unresolved entry can enqueue its
+    // deterministic owner notice, which may already have durable custody too.
+    for (const rec of [...this.inflight.values()]) rec.promise = this.run(rec)
   }
 
   // Persist (write-ahead) then run the chain. The returned promise settles when
@@ -399,7 +419,7 @@ export class Escalator {
     }
     const entry: SpoolEntry = {
       v: 1,
-      id: this.makeId(),
+      id: job.signalId ?? this.makeId(),
       createdAt: this.deps.now().toISOString(),
       kind: job.kind,
       target: job.target,
@@ -419,12 +439,14 @@ export class Escalator {
   // supervisor cancels a flooding watcher's queued forwards). Cancelled entries
   // become durable dead-letters (status "flooded"): the file stays on disk, is
   // never re-drained, and the count is returned for the breaker's owner alert.
-  // A signal whose send is already on the wire may still land — at-least-once
-  // semantics tolerate that; the latch stops every subsequent attempt.
+  // A signal whose send may be on the wire retains its custody record instead
+  // of being cancelled. The latch stops only unsent queued forwards.
   cancelPending(pred: (entry: Readonly<SpoolEntry>) => boolean): number {
     let count = 0
     for (const rec of this.inflight.values()) {
       if (rec.cancelled || rec.entry.status !== 'pending') continue
+      // Once a send may be on the wire, cancellation cannot erase custody.
+      if (rec.entry.delivery) continue
       if (!pred(rec.entry)) continue
       rec.cancelled = true
       rec.entry.status = 'flooded'
@@ -439,17 +461,98 @@ export class Escalator {
   // index when the chain settles — however it settles.
   private launch(entry: SpoolEntry, key: string): Promise<void> {
     const rec: InflightRec = { entry, key, cancelled: false, promise: Promise.resolve() }
-    rec.promise = this.runChain(rec).finally(() => {
-      if (this.inflight.get(key) === rec) this.inflight.delete(key)
-    })
     this.inflight.set(key, rec)
+    rec.promise = this.run(rec)
     return rec.promise
+  }
+
+  private async run(rec: InflightRec): Promise<void> {
+    rec.running = true
+    try { await this.runChain(rec) } finally {
+      rec.running = false
+      if ((!rec.entry.delivery || rec.cancelled) && this.inflight.get(rec.key) === rec) this.inflight.delete(rec.key)
+    }
+  }
+
+  accept(event: AcceptanceEvent): void {
+    // Write BEFORE consuming. Handles events arriving before CLI stdout and
+    // duplicate/reordered events, even across process restart.
+    this.acceptanceStore.put(event)
+    void this.reconcileAcceptance()
+  }
+
+  async reconcileAcceptance(): Promise<void> {
+    for (const rec of [...this.inflight.values()]) {
+      if (!rec.running && !rec.cancelled && rec.entry.delivery) await this.run(rec)
+    }
+  }
+
+  private unresolved(entry: SpoolEntry): void {
+    const d = entry.delivery!
+    d.phase = 'unresolved'
+    this.deps.spool.update(entry)
+    this.deps.log('delivery-unresolved', { sig: entry.id, owner: entry.owner, id: entry.meta?.id,
+      deliveryId: d.deliveryId, to: d.to, reason: d.reason })
+    // Never forward the original payload as a fallback TASK. This separate
+    // informational alert can use the owner's/backstop's normal alert chain.
+    // A notice about a notice cannot recursively spawn another notice.
+    if (d.noticeQueued) return
+    if (entry.meta?.uncertaintyNoticeFor) {
+      d.noticeQueued = true
+      this.deps.spool.update(entry)
+      return
+    }
+    void this.deliver({ kind: 'alert', target: entry.owner, owner: entry.owner,
+      signalId: `${entry.id}-uncertainty`, topic: 'notifier-unresolved',
+      meta: { uncertaintyNoticeFor: entry.id },
+      message: `notifier: UNRESOLVED delivery for your trigger ${String(entry.meta?.id ?? '(unknown)')}. ` +
+        `signal=${entry.id}, deliveryId=${d.deliveryId ?? '(not received)'}, recipient=${d.to}. ` +
+        `Execution may already have started. No task retry or task fallback was performed. ` +
+        `Do not replay automatically; investigate native receipts. Reason: ${d.reason ?? 'acceptance unknown'}.` })
+    d.noticeQueued = true
+    this.deps.spool.update(entry)
   }
 
   private async runChain(rec: InflightRec): Promise<void> {
     const entry = rec.entry
     try {
-      for (let li = 0; li < entry.chain.length; li++) {
+      if (entry.delivery) {
+        const d = entry.delivery
+        const event = d.deliveryId ? this.acceptanceStore.get(d.deliveryId) : undefined
+        const recipient = event?.recipient.slice(event.recipient.indexOf('-') + 1)
+        if (event && recipient === d.to) {
+          if (event.outcome === 'unresolved' && d.phase === 'unresolved' && d.noticeQueued) return
+          this.deps.log('delivery-acceptance', { sig: entry.id, deliveryId: event.deliveryId, outcome: event.outcome, owner: entry.owner })
+          if (event.outcome === 'delivered') {
+            this.deps.spool.remove(entry.id)
+            delete entry.delivery
+            return
+          }
+          if (event.outcome === 'failed') {
+            entry.attempts.push({ target: d.to, at: this.deps.now().toISOString(), error: event.reason ?? 'core proven refusal' })
+            // Definitive final refusal: advance ONCE to the next fallback,
+            // never repeat the original task at the refused recipient.
+            entry.cursor = { link: (entry.cursor?.link ?? 0) + 1, attempt: 1 }
+            delete entry.delivery
+            this.deps.spool.update(entry)
+          } else {
+            d.reason = event.reason
+            if (d.phase !== 'unresolved' || !d.noticeQueued) this.unresolved(entry)
+            return
+          }
+        } else {
+          if (d.phase === 'submitting') {
+            d.reason = 'notifier restarted or transport failed across send boundary; acceptance unknown'
+            this.unresolved(entry)
+          } else if (d.phase === 'unresolved' && !d.noticeQueued) this.unresolved(entry)
+          else if (d.phase === 'pending' && d.since && this.deps.now().getTime() - Date.parse(d.since) >= 180_000) {
+            d.reason = 'core final event not received within 180s; custody remains unknown'
+            this.unresolved(entry)
+          }
+          return
+        }
+      }
+      for (let li = entry.cursor?.link ?? 0; li < entry.chain.length; li++) {
         const to = entry.chain[li]!
         const isPrimary = li === 0
         const dead = this.deps.deadLink?.(to) ?? null
@@ -461,7 +564,7 @@ export class Escalator {
           continue
         }
         const message = isPrimary ? entry.message : wrapForFallback(entry, li)
-        for (let attempt = 1; attempt <= this.attemptsPerLink; attempt++) {
+        for (let attempt = entry.cursor?.link === li ? entry.cursor.attempt : 1; attempt <= this.attemptsPerLink; attempt++) {
           // Flood-breaker latch: checked before every attempt (and implicitly
           // after every sleep/lane wait). The entry is already a "flooded"
           // dead-letter — just stop the chain.
@@ -479,13 +582,27 @@ export class Escalator {
             // short-circuit instead of firing a doomed/unwanted attempt.
             rec.cancelled
               ? Promise.resolve<SendResult>({ ok: false, error: 'cancelled by flood breaker' })
-              : this.deps.transport.send({
+              : (() => {
+                // Persist INSIDE the lane, immediately before starting the CLI.
+                entry.cursor = { link: li, attempt }
+                entry.delivery = { phase: 'submitting', to }
+                this.deps.spool.update(entry)
+                return this.deps.transport.send({
                   target: to,
                   message,
                   ...(entry.topic ? { topic: entry.topic } : {}),
-                }),
+                })
+              })(),
           )
           if (rec.cancelled) return
+          if (result.acceptance) {
+            entry.delivery = { phase: result.acceptance, to, deliveryId: result.deliveryId, reason: result.error, since: this.deps.now().toISOString() }
+            this.deps.spool.update(entry)
+            this.deps.log('delivery-custody', { sig: entry.id, owner: entry.owner, deliveryId: result.deliveryId, acceptance: result.acceptance, to })
+            if (result.acceptance === 'unresolved') this.unresolved(entry)
+            return
+          }
+          delete entry.delivery
           if (result.ok) {
             // len = correlation handle against the iapeer delivery log (0.1.3
             // attribution contract) — the length of what was ACTUALLY sent
@@ -506,6 +623,7 @@ export class Escalator {
             at: this.deps.now().toISOString(),
             error: result.error ?? 'unknown error',
           })
+          entry.cursor = attempt < this.attemptsPerLink ? { link: li, attempt: attempt + 1 } : { link: li + 1, attempt: 1 }
           // Persist progress after EVERY failed attempt — a crash mid-chain
           // re-drains with full history.
           this.deps.spool.update(entry)

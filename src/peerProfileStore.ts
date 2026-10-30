@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { randomUUID } from 'crypto'
-import { homedir } from 'os'
+import { resolveIapeerRoot } from './manifest.ts'
 import { dirname, join } from 'path'
 
 // ── Peer-profile trigger store ──────────────────────────────────────────────
@@ -64,7 +64,7 @@ function defaultProfilePath(cwd: string): string {
 }
 
 function defaultPeersIndexPath(): string {
-  return join(homedir(), '.iapeer', 'peers-profiles.json')
+  return join(resolveIapeerRoot(), 'peers-profiles.json')
 }
 
 // Atomic write: tmp + rename, so a reader never observes a half-written profile

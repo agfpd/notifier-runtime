@@ -4,7 +4,7 @@
 
 A scheduled message or a watcher alert is only useful if it actually arrives. A target peer may be asleep, slow to wake, or unreachable at the moment a signal fires. So delivery is not fire-and-forget: every signal is retried and escalated down a chain, and a signal that can't be delivered anywhere is preserved on disk rather than dropped.
 
-The contract is *at-least-once*, and "delivered to someone alive" beats "delivered exactly to the target". A duplicate alert is better than a lost one.
+An explicit refusal advances the delivery chain. Unknown native acceptance does not: replay could duplicate a task that already started. A native delivery receipt proves input acceptance, not task completion or exactly-once external effects.
 
 ## The chain
 
@@ -69,9 +69,21 @@ A signal is written to a durable spool *before* delivery is attempted, so a cras
 
 `timer` and `watcher` are separate processes with separate spools, so neither drains the other's queue. Each pending signal is one file recording its chain and every attempt so far. When the runtime starts, it re-drains the spool: any signal that was in flight when the previous process died is picked up and its chain continued from where it left off.
 
+### Pending native acceptance
+
+Before launching a send, the spool records `submitting` plus the chain cursor. A CLI `pending acceptance <deliveryId>` acknowledgement changes that to `pending`, retaining trigger owner/id, payload and chain. It is custody, not success: there are no retries or task fallbacks while acceptance is unknown.
+
+Only `core/iapeer-system` events on topic `delivery-acceptance` resolve custody. The event inbox is written under `<IAPEER_ROOT>/state/notifier/<personality>/acceptance-events/` before consumption, so an event arriving before the CLI response or a notifier restart is retained. Correlation uses the exact deliveryId and recipient, not the current trigger configuration (which may already have changed).
+
+- `delivered`: remove the signal without another send.
+- `failed`: a proven pre-paste refusal; advance once to the next link of the stored trigger chain.
+- `unresolved`: retain custody and send a separate `notifier-unresolved` informational alert to the trigger owner, with trigger id, signal id and deliveryId. It does not contain or delegate the original task. The informational alert uses owner → backstop if needed; the original task never enters its fallback chain. Late delivered evidence still resolves custody.
+
+The same uncertainty rule covers a killed CLI, an unfamiliar acknowledgement, or restart during `submitting` before the deliveryId was received. Without that id automatic correlation is unavailable; the owner gets the signal id for investigation, and the task is not replayed. A pending record lacking a final event for 180 seconds also becomes visibly unresolved, without taking ownership of core resolution. Core event receipts and the notification checkpoint survive notifier restart. Terminal event receipts are retained to reject duplicate/stale events.
+
 ## Delivery transport
 
-A single delivery is one `iapeer send` to the recipient, with the message piped in. Each attempt has a hard **120-second** timeout — generous, because a cold wake-on-miss legitimately takes tens of seconds — after which the attempt is killed and counts as a failure. Deliveries to the same recipient are serialized (one in flight at a time); different recipients proceed in parallel.
+A single delivery is one `iapeer send` to the recipient, with the message piped in. Each attempt has a hard **120-second** timeout — generous, because a cold wake-on-miss legitimately takes tens of seconds — after which the CLI is killed and acceptance is treated as unknown, not a proven refusal. Deliveries to the same recipient are serialized (one in flight at a time); different recipients proceed in parallel. A flood breaker cancels only forwards not yet on the wire: it cannot erase native custody.
 
 ## The fixed numbers
 

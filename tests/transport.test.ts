@@ -108,7 +108,7 @@ describe('makeAsyncIapTransport — spawn + hard timeout (the spawnSync mine)', 
   }
 
   test('exit 0 → ok', async () => {
-    const bin = makeAsyncStub('aiap-ok', ['cat > /dev/null', 'exit 0'])
+    const bin = makeAsyncStub('aiap-ok', ['cat > /dev/null', 'echo "delivered to boris (claude)"', 'exit 0'])
     const t = makeAsyncIapTransport({ iapBin: bin })
     expect(await t.send({ target: 'boris', message: 'hi' })).toEqual({ ok: true })
   })
@@ -131,6 +131,15 @@ describe('makeAsyncIapTransport — spawn + hard timeout (the spawnSync mine)', 
     expect(Date.now() - started).toBeLessThan(5_000)
     expect(r.ok).toBe(false)
     expect(r.error).toContain('timed out after 250ms')
+    expect(r.acceptance).toBe('unresolved')
+  })
+
+  test('pending CLI output preserves durable deliveryId; unknown acknowledgement never claims delivery', async () => {
+    const bin = makeAsyncStub('aiap-pending', ['cat > /dev/null', 'echo "pending acceptance abc-123 for linus (codex) — core owns resolution; do not resend"'])
+    const r = await makeAsyncIapTransport({ iapBin: bin }).send({ target: 'linus', message: 'm' })
+    expect(r).toEqual({ ok: true, acceptance: 'pending', deliveryId: 'abc-123' })
+    const unknown = makeAsyncStub('aiap-unknown', ['cat > /dev/null', 'echo mystery'])
+    expect((await makeAsyncIapTransport({ iapBin: unknown }).send({ target: 'linus', message: 'm' })).acceptance).toBe('unresolved')
   })
 
   test('missing binary → error, not an exception', async () => {

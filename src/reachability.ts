@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'fs'
-import { homedir } from 'os'
+import { resolveIapeerRoot } from './manifest.ts'
 import { join } from 'path'
 
 // ── Static reachability of a peer FROM the notifier ─────────────────────────
@@ -51,7 +51,7 @@ export function parseRegistry(raw: unknown): Registry {
 
 // Best-effort registry read: any failure → empty registry (every peer then
 // reads as "unknown" → warnings only, never a refusal on a broken read).
-export function readRegistry(path = join(homedir(), '.iapeer', 'peers-profiles.json')): Registry {
+export function readRegistry(path = join(resolveIapeerRoot(), 'peers-profiles.json')): Registry {
   try {
     if (!existsSync(path)) return new Map()
     return parseRegistry(JSON.parse(readFileSync(path, 'utf8')))

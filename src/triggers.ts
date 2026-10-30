@@ -1,6 +1,6 @@
 import { createHash } from 'crypto'
 import { existsSync, readFileSync } from 'fs'
-import { homedir } from 'os'
+import { resolveIapeerRoot } from './manifest.ts'
 import { join } from 'path'
 import { NAME_RE } from './constants.ts'
 import { parseWhen } from './when.ts'
@@ -324,7 +324,7 @@ function defaultProfilePath(cwd: string): string {
 // peer-profile.json → parseTriggersFromProfile. Missing/invalid files surface
 // in `errors` without aborting the whole scan.
 export function loadTriggers(opts: LoadTriggersOptions = {}): ParseTriggersResult {
-  const peersIndexPath = opts.peersIndexPath ?? join(homedir(), '.iapeer', 'peers-profiles.json')
+  const peersIndexPath = opts.peersIndexPath ?? join(resolveIapeerRoot(), 'peers-profiles.json')
   const profilePathFor = opts.profilePathFor ?? defaultProfilePath
   const readFile = opts.readFile ?? ((p: string) => readFileSync(p, 'utf8'))
   const fileExists = opts.fileExists ?? ((p: string) => existsSync(p))

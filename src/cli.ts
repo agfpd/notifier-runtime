@@ -14,6 +14,7 @@ import { checkReachable, readRegistry, telegramRelays, type Registry } from './r
 import type { Trigger } from './triggers.ts'
 import { runCheck } from './checkGate.ts'
 import { Escalator, makeFileSpool } from './escalation.ts'
+import { makeAcceptanceStore, parseAcceptanceEvent } from './acceptance.ts'
 import { resolvePersonality } from './identity.ts'
 import { resolveIapeerRoot } from './manifest.ts'
 import { nodeProcessSource } from './processSource.ts'
@@ -96,6 +97,7 @@ function makeEscalator(personality: string): NotifierDelivery {
     {
       transport,
       spool,
+      acceptanceStore: makeAcceptanceStore(join(spoolDir, '..', 'acceptance-events')),
       deadLink,
       log,
       setTimer: (ms, cb) => {
@@ -107,6 +109,7 @@ function makeEscalator(personality: string): NotifierDelivery {
     { backstop },
   )
   log('escalation-ready', { spool: spoolDir, backstop })
+  setInterval(() => void escalator.reconcileAcceptance(), 1000).unref()
 
   // Lost-digest: surface dead-letters to a telegram-faced relay agent. Relays:
   // NOTIFIER_ALARM_RELAYS (comma list) when set, else the backstop followed by
@@ -214,7 +217,7 @@ async function runTimer(triggers: TimeTrigger[], personality: string, errorCount
 
   // Live-reload: a registration message re-projects the TIME triggers and
   // diffs them into the running scheduler (surviving slots keep their grid).
-  installEnvelopeReader('timer', echoGuard, () => {
+  installEnvelopeReader('timer', echoGuard, escalator, () => {
     const { ok, errors } = loadTriggers()
     for (const error of errors) log('trigger-load-error', { error })
     const time = ok.filter((t): t is TimeTrigger => t.role === 'time')
@@ -262,7 +265,7 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
 
   // Live-reload: a registration message re-projects the EVENT triggers and
   // diffs them into the running supervisor (surviving watchers keep running).
-  installEnvelopeReader('watcher', echoGuard, opts => {
+  installEnvelopeReader('watcher', echoGuard, escalator, opts => {
     const { ok, errors } = loadTriggers()
     for (const error of errors) log('trigger-load-error', { error })
     const event = ok.filter((t): t is EventTrigger => t.role === 'event')
@@ -316,6 +319,7 @@ async function runWatcher(triggers: EventTrigger[], errorCount: number): Promise
 function installEnvelopeReader(
   role: Role,
   echoGuard: EchoGuard,
+  escalator: Escalator,
   reloadCb: (opts?: { restart?: string[] }) => void,
 ): void {
   const store = new PeerProfileStore()
@@ -333,6 +337,12 @@ function installEnvelopeReader(
     for (const raw of extracted.envelopes) {
       try {
         const env = parseIapEnvelope(raw)
+        if (env.topic === 'delivery-acceptance') {
+          const event = parseAcceptanceEvent(env)
+          if (event) escalator.accept(event)
+          else log('acceptance-untrusted', { from: env.fromPersonality, runtime: env.fromRuntime })
+          continue
+        }
         handleEnvelope(env, role, { store, transport, reloadCb, log, registry })
       } catch (err) {
         // A malformed envelope is logged and dropped — never crashes the reader

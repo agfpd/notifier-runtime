@@ -11,6 +11,17 @@ export interface Signal {
 export interface SendResult {
   ok: boolean
   error?: string
+  acceptance?: 'pending' | 'unresolved'
+  deliveryId?: string
+}
+
+// 0.4.155 CLI has no --json. Only documented positive forms are success;
+// an unfamiliar zero-exit acknowledgement is custody uncertainty, not refusal.
+export function parseSendSuccess(stdout: string): SendResult {
+  const pending = /^pending acceptance ([a-zA-Z0-9-]+) for /m.exec(stdout)
+  if (pending) return { ok: true, acceptance: 'pending', deliveryId: pending[1] }
+  if (/^(delivered to |queued for )/m.test(stdout)) return { ok: true }
+  return { ok: true, acceptance: 'unresolved', error: 'unrecognized CLI acknowledgement; do not replay' }
 }
 
 export interface Transport {
@@ -56,7 +67,7 @@ export function makeIapTransport(cfg: IapTransportConfig = {}): Transport {
         const detail = (result.stderr || result.stdout || `exit ${result.status}`).toString().trim()
         return { ok: false, error: detail }
       }
-      return { ok: true }
+      return parseSendSuccess(String(result.stdout))
     },
   }
 }
@@ -69,7 +80,7 @@ export function makeIapTransport(cfg: IapTransportConfig = {}): Transport {
 // escalation engine (escalation.ts) needs neither property: delivery attempts
 // run async (the scheduler tick / watcher forward path never waits on a wake)
 // and every attempt is bounded by a hard timeout (SEND_TIMEOUT_MS → SIGKILL →
-// the attempt counts as failed and the chain moves on).
+// acceptance becomes unresolved; the original task is not replayed).
 
 export interface AsyncTransport {
   send(sig: Signal): Promise<SendResult>
@@ -121,19 +132,19 @@ export function makeAsyncIapTransport(cfg: AsyncIapTransportConfig = {}): AsyncT
         // the hang class this timeout exists to bound). Output is irrelevant on
         // this path: the verdict is the timeout itself.
         child.on('exit', () => {
-          if (timedOut) settle({ ok: false, error: `send timed out after ${timeoutMs}ms (killed)` })
+          if (timedOut) settle({ ok: false, acceptance: 'unresolved', error: `send timed out after ${timeoutMs}ms (killed)` })
         })
         child.on('close', (code, signal) => {
           if (timedOut) {
-            settle({ ok: false, error: `send timed out after ${timeoutMs}ms (killed)` })
+            settle({ ok: false, acceptance: 'unresolved', error: `send timed out after ${timeoutMs}ms (killed)` })
             return
           }
           if (code === 0) {
-            settle({ ok: true })
+            settle(parseSendSuccess(stdout))
             return
           }
           const detail = (stderr || stdout || `exit ${code ?? signal}`).trim()
-          settle({ ok: false, error: detail })
+          settle({ ok: false, ...(signal ? { acceptance: 'unresolved' as const } : {}), error: detail })
         })
         // EPIPE on a child that died before reading stdin must not crash the
         // process — 'close' will still deliver the failure.
