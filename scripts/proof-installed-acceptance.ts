@@ -166,13 +166,19 @@ try {
     } }))
   }
   writeFileSync(peerLaunchEnvPath(cwd, runtime), "PEER_START_ARGS='--no-daemon -c model_reasoning_effort=low'\n")
+  // A canonical /bin/cat tty echoes input once in the terminal driver and a
+  // second time from cat. Use a raw stdin sink so pane occurrences count real
+  // routed envelopes, not local terminal echo (especially for fallback proof).
+  const sinkScript = join(root, 'sink.ts')
+  writeFileSync(sinkScript, `if (process.stdin.isTTY) process.stdin.setRawMode(true)\nprocess.stdout.write('SINK_READY\\n')\nprocess.stdin.on('data', d => process.stdout.write(d))\n`)
   for (const name of ['sender', 'relay', 'operator', 'backstop']) {
     const dir = join(root, name)
     writePeerProfileAtomic(dir, { personality: name, runtime: 'notifier', runtimes: ['notifier'], intelligence: 'artificial' })
     await upsertPeer({ personality: name, runtime: 'notifier', intelligence: 'artificial', cwd: dir }, { env })
     const sink = await startSupervisorDaemon({ session: `notifier-${name}`, runtime: 'notifier', runDir, daemonArgv: [bin, 'supervisor'],
-      serve: { argv: ['/bin/cat'], env: {}, cwd: root, paneLogPath: join(root, `${name}.log`) } })
+      serve: { argv: [process.execPath, sinkScript], env: {}, cwd: root, paneLogPath: join(root, `${name}.log`) } })
     if (sink.state !== 'started') throw new Error(JSON.stringify(sink))
+    await until('raw sink ready', () => read(join(root, `${name}.log`)).includes('SINK_READY'))
   }
   writeFileSync(join(iap, 'alerts.json'), JSON.stringify({ peer: 'operator', runtime: 'notifier' }))
   writePeerProfileAtomic(notifierCwd, { personality: role, runtime: 'notifier', runtimes: ['notifier'], intelligence: 'absent' })
