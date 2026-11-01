@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-01
+
+### Fixed
+
+- Separate per-signal custody from content coalescing: pending/unresolved deliveries cannot swallow later identical signals, including after restart. Timer occurrences never coalesce; unsent watcher/alert storms still do.
+- Consume core operator-resolution events (delivered/failed/dismissed) as custody closure only, without task replay or fallback. Natural proven-refusal events retain their fallback behavior.
+
 ## [0.6.0] - 2026-10-31
 
 ### Added

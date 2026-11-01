@@ -12,19 +12,59 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 const flush = () => new Promise<void>(r => setTimeout(r, 0))
 const job: EscalationJob = { kind: 'fire', target: 'receiver', owner: 'owner', fallbacks: ['relay'], message: 'TASK', meta: { id: 'owner:tick' } }
 const event = (outcome: 'delivered' | 'failed' | 'unresolved', deliveryId = 'delivery-1') => ({ deliveryId, outcome, recipient: 'codex-receiver', reason: 'test' })
+let signalSequence = 0
 function setup(spool: Spool = new InMemorySpool(), acceptanceStore: AcceptanceStore = new MemoryAcceptanceStore()) {
   const sent: Signal[] = [], logs: string[] = []
   let now = Date.now(), seq = 0
   const results: SendResult[] = [{ ok: true, acceptance: 'pending', deliveryId: 'delivery-1' }]
   const e = new Escalator({ spool, acceptanceStore,
     transport: { async send(sig) { sent.push(sig); return results.shift() ?? { ok: true } } },
-    now: () => new Date(now), makeId: () => `signal-${++seq}`, setTimer: (_ms, cb) => { queueMicrotask(cb); return () => {} },
+    now: () => new Date(now), makeId: () => `signal-${++signalSequence}`, setTimer: (_ms, cb) => { queueMicrotask(cb); return () => {} },
     log: evt => logs.push(evt),
   }, { backstop: 'backstop' })
   return { e, sent, logs, results, spool, advance(ms: number) { now += ms } }
 }
 
 describe('durable pending acceptance', () => {
+  for (const kind of ['fire', 'forward', 'alert'] as const) {
+    for (const phase of ['pending', 'unresolved'] as const) {
+      test(`${kind}: ${phase} custody cannot consume the next identical occurrence, including restart`, async () => {
+        const sp = join(dir, `independent-${kind}-${phase}`)
+        const inbox = join(dir, `independent-inbox-${kind}-${phase}`)
+        const a = setup(makeFileSpool(sp), makeAcceptanceStore(inbox))
+        const j = { ...job, kind }
+        await a.e.deliver(j)
+        if (phase === 'unresolved') { a.e.accept(event('unresolved')); await flush() }
+        await a.e.deliver(j)
+        expect(a.sent.filter(s => s.message === 'TASK').length).toBe(2)
+        const b = setup(makeFileSpool(sp), makeAcceptanceStore(inbox))
+        b.results.length = 0
+        b.e.start(); await flush()
+        await b.e.deliver(j)
+        expect(b.sent.filter(s => s.message === 'TASK').length).toBe(1)
+        expect([...a.logs, ...b.logs]).not.toContain('signal-coalesced')
+        // A late resolution closes only the old occurrence, never the new one.
+        b.e.accept(event('delivered')); await flush()
+        expect(b.spool.loadPending()).toEqual([])
+      })
+    }
+  }
+  for (const outcome of ['delivered', 'failed', 'dismissed'] as const) {
+    test(`operator ${outcome} closes custody without fallback or task replay`, async () => {
+      const h = setup()
+      await h.e.deliver(job)
+      h.e.accept(event('unresolved')); await flush()
+      const resolution = { outcome, reason: 'operator investigation', actor: 'operator', at: Date.now() }
+      const body = JSON.stringify({ event: 'delivery-acceptance', ...event('unresolved'), outcome, operatorResolved: true, resolution })
+      const env = parseIapEnvelope(`<iap from="iapeer-system" runtime="core" topic="delivery-acceptance"><msg>${body}</msg></iap>`)
+      h.e.accept(parseAcceptanceEvent(env)!); await flush()
+      expect(h.spool.loadPending()).toEqual([])
+      expect(h.sent.map(s => s.target)).toEqual(['receiver', 'owner'])
+      h.e.accept(event('unresolved')); await flush()
+      await h.e.deliver(job)
+      expect(h.sent.filter(s => s.message === 'TASK').length).toBe(2)
+    })
+  }
   test('pending holds original; delivered deletes without retries/fallback', async () => {
     const h = setup()
     await h.e.deliver(job)

@@ -338,8 +338,8 @@ export class Escalator {
   private readonly lanes = new Lanes()
   private readonly makeId: () => string
   private readonly acceptanceStore: AcceptanceStore
-  // In-flight index by dedup key — the coalescing seam. An entry lives here
-  // from deliver()/start() until its chain settles (delivered/lost/cancelled).
+  // Custody index by signal ID, separate from content coalescing. A prior
+  // occurrence must never consume a later timer tick or an on-wire signal.
   private readonly inflight = new Map<string, InflightRec>()
 
   constructor(deps: EscalatorDeps, opts: EscalatorOpts = {}) {
@@ -364,8 +364,9 @@ export class Escalator {
     const pending = this.deps.spool.loadPending()
     for (const entry of pending) {
       const key = entryKey(entry)
-      const existing = this.inflight.get(key)
-      if (existing && !entry.delivery && !existing.entry.delivery) {
+      const existing = entry.kind !== 'fire' && !entry.delivery
+        ? [...this.inflight.values()].find(r => !r.entry.delivery && entryKey(r.entry) === key) : undefined
+      if (existing) {
         existing.entry.coalesced = (existing.entry.coalesced ?? 0) + 1 + (entry.coalesced ?? 0)
         this.deps.spool.update(existing.entry)
         this.deps.spool.remove(entry.id)
@@ -384,7 +385,7 @@ export class Escalator {
         intendedTarget: entry.target,
         attemptsSoFar: entry.attempts.length,
       })
-      const indexedKey = existing ? `${key}|${entry.id}` : key
+      const indexedKey = entry.id
       this.inflight.set(indexedKey, { entry, key: indexedKey, cancelled: false, promise: Promise.resolve() })
     }
     // Index EVERYTHING before resuming: an unresolved entry can enqueue its
@@ -397,15 +398,16 @@ export class Escalator {
   // (`void escalator.deliver(...)`), tests await it. NEVER rejects: every
   // failure path is a log event + spool state, not an exception.
   //
-  // Coalescing: a job byte-identical to a signal still in flight starts NO new
-  // chain — it bumps the in-flight entry's counter and returns that entry's
-  // chain promise. At-least-once holds: the one in-flight copy either reaches
-  // someone in the chain or dead-letters loudly; a second identical copy could
-  // add nothing but noise (the 2026-07-17 storm hammered the fallback with
-  // hundreds of copies of one line).
+  // Coalesce byte-identical unsent watcher/alert storm lines only. Timer fires
+  // are distinct occurrences, even with identical text. Once a send crosses
+  // the submission boundary, its custody cannot absorb subsequent signals.
   deliver(job: EscalationJob): Promise<void> {
     const key = dedupKey(job.kind, job.owner, job.meta?.id, job.target, job.topic, job.message)
-    const existing = this.inflight.get(key)
+    // Deterministic internal notices are idempotent even while in custody.
+    const byId = job.signalId ? this.inflight.get(job.signalId) : undefined
+    if (byId) return byId.promise
+    const existing = job.kind !== 'fire'
+      ? [...this.inflight.values()].find(r => !r.entry.delivery && entryKey(r.entry) === key) : undefined
     if (existing && !existing.cancelled) {
       existing.entry.coalesced = (existing.entry.coalesced ?? 0) + 1
       this.deps.spool.update(existing.entry)
@@ -432,7 +434,7 @@ export class Escalator {
       ...(job.meta ? { meta: job.meta } : {}),
     }
     this.deps.spool.put(entry)
-    return this.launch(entry, key)
+    return this.launch(entry, entry.id)
   }
 
   // Cancel every in-flight signal matching `pred` (flood-breaker seam — the
@@ -523,7 +525,7 @@ export class Escalator {
         if (event && recipient === d.to) {
           if (event.outcome === 'unresolved' && d.phase === 'unresolved' && d.noticeQueued) return
           this.deps.log('delivery-acceptance', { sig: entry.id, deliveryId: event.deliveryId, outcome: event.outcome, owner: entry.owner })
-          if (event.outcome === 'delivered') {
+          if (event.operatorResolved || event.outcome === 'dismissed' || event.outcome === 'delivered') {
             this.deps.spool.remove(entry.id)
             delete entry.delivery
             return

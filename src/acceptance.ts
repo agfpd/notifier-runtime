@@ -5,9 +5,11 @@ import type { IapEnvelope } from './envelope.ts'
 
 export interface AcceptanceEvent {
   deliveryId: string
-  outcome: 'delivered' | 'failed' | 'unresolved'
+  outcome: 'delivered' | 'failed' | 'unresolved' | 'dismissed'
   recipient: string
   reason?: string
+  operatorResolved?: boolean
+  resolution?: { outcome: 'delivered' | 'failed' | 'dismissed'; reason: string; actor: string; at: number }
 }
 
 export interface AcceptanceStore {
@@ -20,7 +22,7 @@ export class MemoryAcceptanceStore implements AcceptanceStore {
   get(id: string) { return this.events.get(id) }
   put(event: AcceptanceEvent) {
     const prior = this.get(event.deliveryId)
-    if (!prior || prior.outcome === 'unresolved') this.events.set(event.deliveryId, { ...event })
+    if (!prior || prior.outcome === 'unresolved' || (event.operatorResolved && !prior.operatorResolved)) this.events.set(event.deliveryId, { ...event })
   }
 }
 
@@ -38,7 +40,7 @@ export function makeAcceptanceStore(dir: string): AcceptanceStore {
   return { get, put(event) {
     const prior = get(event.deliveryId)
     // Delivered/failed are terminal; a delayed unresolved reminder cannot regress them.
-    if (prior && prior.outcome !== 'unresolved') return
+    if (prior && prior.outcome !== 'unresolved' && !(event.operatorResolved && !prior.operatorResolved)) return
     mkdirSync(dir, { recursive: true, mode: 0o700 })
     const dest = path(event.deliveryId), tmp = `${dest}.${randomUUID()}.tmp`
     writeFileSync(tmp, JSON.stringify(event) + '\n', { mode: 0o600 })
@@ -52,9 +54,10 @@ export function parseAcceptanceEvent(env: IapEnvelope): AcceptanceEvent | null {
   if (env.fromRuntime !== 'core' || env.fromPersonality !== 'iapeer-system' || env.topic !== 'delivery-acceptance') return null
   const e = JSON.parse(env.message)
   if (e.event !== 'delivery-acceptance' || typeof e.deliveryId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(e.deliveryId)
-    || !['delivered', 'failed', 'unresolved'].includes(e.outcome) || typeof e.recipient !== 'string') {
+    || !['delivered', 'failed', 'unresolved', 'dismissed'].includes(e.outcome) || typeof e.recipient !== 'string') {
     throw new Error('invalid delivery-acceptance event')
   }
   return { deliveryId: e.deliveryId, outcome: e.outcome, recipient: e.recipient,
-    ...(typeof e.reason === 'string' ? { reason: e.reason } : {}) }
+    ...(typeof e.reason === 'string' ? { reason: e.reason } : {}),
+    ...(e.operatorResolved === true || e.resolution ? { operatorResolved: true, resolution: e.resolution } : {}) }
 }
