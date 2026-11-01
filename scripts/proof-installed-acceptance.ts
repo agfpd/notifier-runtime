@@ -228,6 +228,22 @@ try {
   const attempts = notifier.split('\n').filter(l => l.includes('"evt":"deliver-attempt"') && l.includes(`"to":"${personality}"`))
   if (scenario !== 'refusal' && attempts.length !== 1) throw new Error(`task attempted ${attempts.length} times`)
   if (scenario === 'unresolved' && (!owner.includes('acceptance-proof') || owner.includes(marker))) throw new Error('owner notice missing trigger correlation or delegates original task')
+  if (scenario === 'unresolved' && process.argv.includes('--next-occurrence')) {
+    const old = task(), oldDeliveryId = old.delivery.deliveryId
+    // Recover the native receiver; do not replay the old signal. A new trigger
+    // occurrence has the exact same payload and must be independently sent.
+    await turn('RECOVER_FOR_NEXT_OCCURRENCE')
+    rmSync(join(root, 'emitted'), { recursive: true, force: true })
+    if (role === 'watcher') await must('send', role, '--runtime', 'notifier', '--from', 'notifier-sender', '--message', JSON.stringify(config))
+    await until('next identical occurrence has native user receipt', () => records().some(r => r.type === 'response_item' && r.payload?.role === 'user'
+      && r.payload.content?.some((c: any) => c.type === 'input_text' && c.text.includes(marker))), 100000)
+    await until('new occurrence settled independently of unresolved old signal', () => pending().filter(e => e.message === marker).length === 1 && task()?.id === old.id, 100000)
+    if (read(notifierLog).includes('"evt":"signal-coalesced"')) throw new Error('next occurrence coalesced')
+    record('next-occurrence-delivered-with-old-unresolved', { old, remainingSpool: pending(), notifier: read(notifierLog) })
+    await must('delivery', 'resolve', oldDeliveryId, 'dismissed', '--reason', 'isolated proof: old task must not replay')
+    await until('operator resolution releases old notifier custody', () => !pending().some(e => e.id === old.id), 30000)
+    record('operator-dismissed-releases-custody', { oldDeliveryId, remainingSpool: pending(), notifier: read(notifierLog) })
+  }
   record('installed-notifier-final', { role, scenario, notifierBin, notifierSHA256, nativeUsers: nativeUsers.length, relayCount, taskAttempts: attempts.length,
     core: acceptance(), remainingSpool: pending(), owner, relay, notifier })
   success = true

@@ -79,6 +79,8 @@ Only `core/iapeer-system` events on topic `delivery-acceptance` resolve custody.
 - `failed`: a proven pre-paste refusal; advance once to the next link of the stored trigger chain.
 - `unresolved`: retain custody and send a separate `notifier-unresolved` informational alert to the trigger owner, with trigger id, signal id and deliveryId. It does not contain or delegate the original task. The informational alert uses owner → backstop if needed; the original task never enters its fallback chain. Late delivered evidence still resolves custody.
 
+Custody belongs to one signal, not to the trigger: a later occurrence is sent independently even with identical text and even while an older delivery is unresolved. Timer occurrences never coalesce. Watcher/alert storm coalescing applies only to unsent signals, not to pending/unresolved custody. A core operator-resolution event (`operatorResolved:true` or `resolution`) closes custody for delivered/failed/dismissed without replay or fallback; an ordinary proven-refusal `failed` event still advances the fallback chain.
+
 The same uncertainty rule covers a killed CLI, an unfamiliar acknowledgement, or restart during `submitting` before the deliveryId was received. Without that id automatic correlation is unavailable; the owner gets the signal id for investigation, and the task is not replayed. A pending record lacking a final event for 180 seconds also becomes visibly unresolved, without taking ownership of core resolution. Core event receipts and the notification checkpoint survive notifier restart. Terminal event receipts are retained to reject duplicate/stale events.
 
 ## Delivery transport
