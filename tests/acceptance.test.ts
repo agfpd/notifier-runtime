@@ -50,6 +50,18 @@ describe('durable pending acceptance', () => {
     }
   }
   for (const outcome of ['delivered', 'failed', 'dismissed'] as const) {
+    test(`operator ${outcome} before CLI pending survives restart and stale unresolved`, async () => {
+      const sp = join(dir, `early-resolution-${outcome}`), inbox = join(dir, `early-inbox-${outcome}`)
+      const a = setup(makeFileSpool(sp), makeAcceptanceStore(inbox))
+      a.e.accept({ deliveryId: 'delivery-1', outcome, recipient: 'codex-receiver', operatorResolved: true,
+        resolution: { outcome, reason: 'manual', actor: 'operator', at: Date.now() } })
+      a.e.accept(event('unresolved'))
+      await a.e.deliver(job)
+      const b = setup(makeFileSpool(sp), makeAcceptanceStore(inbox))
+      b.e.start(); await flush()
+      expect(b.spool.loadPending()).toEqual([])
+      expect(b.sent).toEqual([])
+    })
     test(`operator ${outcome} closes custody without fallback or task replay`, async () => {
       const h = setup()
       await h.e.deliver(job)
