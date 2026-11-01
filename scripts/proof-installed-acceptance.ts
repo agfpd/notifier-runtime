@@ -240,9 +240,12 @@ try {
     await until('new occurrence settled independently of unresolved old signal', () => pending().filter(e => e.message === marker).length === 1 && task()?.id === old.id, 100000)
     if (read(notifierLog).includes('"evt":"signal-coalesced"')) throw new Error('next occurrence coalesced')
     record('next-occurrence-delivered-with-old-unresolved', { old, remainingSpool: pending(), notifier: read(notifierLog) })
-    await must('delivery', 'resolve', oldDeliveryId, 'dismissed', '--reason', 'isolated proof: old task must not replay')
+    const resolutionOutcome = arg('--resolution-outcome') ?? 'dismissed'
+    await must('delivery', 'resolve', oldDeliveryId, resolutionOutcome, '--reason', 'isolated proof: old task must not replay')
     await until('operator resolution releases old notifier custody', () => !pending().some(e => e.id === old.id), 30000)
-    record('operator-dismissed-releases-custody', { oldDeliveryId, remainingSpool: pending(), notifier: read(notifierLog) })
+    await Bun.sleep(2000)
+    if (read(join(root, 'relay.log')).includes(marker) || read(join(root, 'sender.log')).includes(marker)) throw new Error('operator close incorrectly delegated original task')
+    record(`operator-${resolutionOutcome}-releases-custody-without-fallback`, { oldDeliveryId, remainingSpool: pending(), notifier: read(notifierLog) })
   }
   record('installed-notifier-final', { role, scenario, notifierBin, notifierSHA256, nativeUsers: nativeUsers.length, relayCount, taskAttempts: attempts.length,
     core: acceptance(), remainingSpool: pending(), owner, relay, notifier })
