@@ -242,7 +242,9 @@ try {
     record('next-occurrence-delivered-with-old-unresolved', { old, remainingSpool: pending(), notifier: read(notifierLog) })
     const resolutionOutcome = arg('--resolution-outcome') ?? 'dismissed'
     await must('delivery', 'resolve', oldDeliveryId, resolutionOutcome, '--reason', 'isolated proof: old task must not replay')
-    await until('operator resolution releases old notifier custody', () => !pending().some(e => e.id === old.id), 30000)
+    // Core's acceptance sweep runs every 60s; CLI resolve is not a synchronous
+    // caller callback. Allow a full sweep plus transport margin.
+    await until('operator resolution releases old notifier custody', () => !pending().some(e => e.id === old.id), 90000)
     await Bun.sleep(2000)
     if (read(join(root, 'relay.log')).includes(marker) || read(join(root, 'sender.log')).includes(marker)) throw new Error('operator close incorrectly delegated original task')
     record(`operator-${resolutionOutcome}-releases-custody-without-fallback`, { oldDeliveryId, remainingSpool: pending(), notifier: read(notifierLog) })
