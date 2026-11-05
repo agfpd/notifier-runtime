@@ -1,44 +1,96 @@
 name: Publish
 
 # Publishes @agfpd/notifier-runtime to npm via trusted publishing (OIDC) — no stored
-# token, no OTP, no browser 2FA. Mirrors the foundation's publish.yml. Triggered by a
-# version tag (v*); the manual dispatch re-publishes an EXISTING tag (the workflow
-# runs from main and checks the tag out). npmjs.com trusted-publisher config must name
+# token, no OTP, no browser 2FA. Dispatch-only: pushing a tag never publishes.
+# Only an archive with the operator-accepted SHA256 may reach the registry.
+# Build candidates with OFFICIAL Node 26.4.0 + npm 11.17.0 (not Homebrew Node:
+# its system zlib produces different gzip bytes from the same tar content).
+# npmjs.com trusted-publisher config must name
 # this file: agfpd / notifier-runtime / publish.yml.
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing version tag to publish (e.g. v0.5.1)'
+        description: 'Existing version tag to publish (e.g. v0.6.3)'
         required: true
+      sha256:
+        description: 'Lowercase SHA256 of the accepted npm-pack archive'
+        required: true
+      dry_run:
+        description: 'Verify archive and native proof without publishing'
+        type: boolean
+        default: false
+
+env:
+  NODE_VERSION: '26.4.0'
+  NPM_VERSION: '11.17.0'
 
 permissions:
   id-token: write # OIDC for npm trusted publishing
   contents: read
 
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: macos-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.13'
       - uses: actions/setup-node@v6
         with:
-          node-version: '24'
+          node-version: ${{ env.NODE_VERSION }}
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false # never cache in release builds
-      - run: npm install -g npm@latest # trusted publishing needs npm >= 11.5.1
+      - run: npm install -g "npm@$NPM_VERSION"
       - name: Tag matches package.json version
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          tag="${{ inputs.tag || github.ref_name }}"
           ver="v$(node -p "require('./package.json').version")"
-          [ "$tag" = "$ver" ] || { echo "tag $tag != package.json $ver" >&2; exit 1; }
+          [ "$TAG" = "$ver" ] || { echo "tag $TAG != package.json $ver" >&2; exit 1; }
       - run: bun install --frozen-lockfile
       - run: bun run test
       - run: bun run typecheck
-      - run: npm publish
+      - name: Pack and check the accepted sha256
+        env:
+          WANT: ${{ inputs.sha256 }}
+        run: |
+          [[ "$WANT" =~ ^[0-9a-f]{64}$ ]] || { echo 'invalid accepted sha256' >&2; exit 1; }
+          archive="$(npm pack --ignore-scripts --silent --pack-destination "$RUNNER_TEMP")"
+          path="$RUNNER_TEMP/$archive"
+          got="$(shasum -a 256 "$path" | cut -d' ' -f1)"
+          echo "packed $archive sha256 $got (node $(node --version), npm $(npm --version))"
+          [ "$got" = "$WANT" ] || { echo "sha256 $got != accepted $WANT — refusing to publish" >&2; exit 1; }
+          echo "ARCHIVE=$path" >> "$GITHUB_ENV"
+      - name: Native proof from the archive, outside the checkout
+        run: |
+          work="$(mktemp -d "$RUNNER_TEMP/notifier-proof.XXXXXX")"
+          trap 'rm -r "$work"' EXIT
+          tar -xzf "$ARCHIVE" -C "$work"
+          (cd "$work" && bun package/scripts/proof-maintenance.ts --receipt "$RUNNER_TEMP/notifier-maintenance.json")
+      - name: Publish exactly the checked archive
+        if: ${{ !inputs.dry_run }}
+        run: npm publish "$ARCHIVE" --access public --ignore-scripts
+      - name: Registry integrity equals the published archive
+        if: ${{ !inputs.dry_run }}
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          ver="$(node -p "require('./package.json').version")"
+          want="sha512-$(openssl dgst -sha512 -binary "$ARCHIVE" | base64 | tr -d '\n')"
+          for i in $(seq 1 30); do
+            got="$(npm view "$name@$ver" dist.integrity 2>/dev/null || true)"
+            [ "$got" = "$want" ] && break
+            sleep 10
+          done
+          echo "registry $got"; echo "local    $want"
+          [ "$got" = "$want" ]
