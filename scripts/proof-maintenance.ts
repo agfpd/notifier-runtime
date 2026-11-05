@@ -74,8 +74,9 @@ try {
   const messages = () => read(wire).trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) as { target: string; message: string }[]
   const start = async (role: 'timer' | 'watcher') => {
     const cwd = join(root, role); mkdirSync(cwd)
+    // Runtime structured diagnostics (including start) are written to stderr.
     const log = join(root, `${role}.log`)
-    const child = Bun.spawn([bin, 'run'], { cwd, env: { ...env, IAP_BIN: iap, NOTIFIER_FALLBACK_TARGET: 'probe', PEER_PERSONALITY: role, PEER_RUNTIME: 'notifier', PEER_IDENTITY: `notifier-${role}` }, stdin: 'pipe', stdout: Bun.file(log), stderr: Bun.file(join(root, `${role}.err`)) })
+    const child = Bun.spawn([bin, 'run'], { cwd, env: { ...env, IAP_BIN: iap, NOTIFIER_FALLBACK_TARGET: 'probe', PEER_PERSONALITY: role, PEER_RUNTIME: 'notifier', PEER_IDENTITY: `notifier-${role}` }, stdin: 'pipe', stdout: Bun.file(join(root, `${role}.out`)), stderr: Bun.file(log) })
     children.push(child)
     await until(`${role} start`, () => read(log).includes('"evt":"start"'))
     return { child, log, send: (body: unknown) => { child.stdin!.write(`<iap from="probe" runtime="codex" topic="maintenance"><msg>${JSON.stringify(body)}</msg></iap>\n`); child.stdin!.flush() } }
@@ -90,6 +91,18 @@ try {
     assert(read(ownerProfile) === before, 'invalid replacement changed profile')
   }
   pass('compiled timer warns about cron rollover; impossible/overflow replace preserves profile', messages().map(m => m.message).filter(m => /NEXT FIRE|Nothing was changed/.test(m)))
+
+  const nonexec = join(root, 'not executable')
+  const untouchedMarker = join(root, 'must-not-run')
+  writeFileSync(nonexec, `#!/bin/sh\ntouch '${untouchedMarker}'\n`); chmodSync(nonexec, 0o644)
+  // Exercise both add and replace through the compiled reader/registration path.
+  for (const id of ['invalid-check', 'calendar']) {
+    const count = messages().length
+    timer.send({ id, when: '@every 1s', check: nonexec, message: 'MUST_NOT_SEND', target: 'self' })
+    await until(`nonexecutable check rejects ${id}`, () => messages().slice(count).some(m => m.message.includes('Registration rejected') && m.message.includes('not executable')))
+    assert(read(ownerProfile) === before && !existsSync(untouchedMarker), 'invalid check mutated profile or executed')
+  }
+  pass('compiled timer rejects nonexecutable check on add/replace without mutation or execution')
 
   const marker = join(root, 'gate-ran')
   const gate = script('gate with spaces', `if /bin/mkdir '${marker}' 2>/dev/null; then trap '' TERM; exec /bin/sleep 45; fi\nexit 1`)
@@ -106,7 +119,12 @@ try {
   watcher.send({ id: 'watch', script: watchScript, target: 'self' })
   await until('watcher forwards verbatim', () => messages().some(m => m.message === 'WATCHER_OK'))
   pass('compiled watcher starts real script and forwards stdout verbatim')
-  for (const id of ['calendar', 'hang', 'beat']) timer.send({ cmd: 'unregister', id })
+  // Both roles share the owner's profile; serialize mutations (no cross-process
+  // store lock is claimed by this proof).
+  for (const id of ['calendar', 'hang', 'beat']) {
+    timer.send({ cmd: 'unregister', id })
+    await until(`timer removed ${id}`, () => !JSON.parse(read(ownerProfile)).notifier.triggers.some((t: { id: string }) => t.id === id))
+  }
   watcher.send({ cmd: 'unregister', id: 'watch' })
   await until('all test triggers removed', () => JSON.parse(read(ownerProfile)).notifier.triggers.length === 0)
   pass('runtime unregister cleans only isolated owner triggers')
