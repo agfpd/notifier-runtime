@@ -5,14 +5,14 @@
     "": {
       "name": "notifier-runtime",
       "devDependencies": {
-        "@agfpd/iapeer": "git+https://github.com/agfpd/iapeer.git#829c2e736a318d343bd7b6b45c0e073026b9e62a",
+        "@agfpd/iapeer": "0.4.165",
         "@types/bun": "latest",
         "typescript": "latest",
       },
     },
   },
   "packages": {
-    "@agfpd/iapeer": ["@agfpd/iapeer@github:agfpd/iapeer#829c2e7", { "dependencies": { "@modelcontextprotocol/sdk": "1.29.0", "@xterm/addon-serialize": "0.14.0", "@xterm/headless": "6.0.0", "ink": "^7.1.0", "proper-lockfile": "^4.1.2", "react": "^19.2.7", "react-devtools-core": "^7.0.1", "transliteration": "2.6.1" }, "bin": { "iapeer": "bin/iapeer" } }, "agfpd-iapeer-829c2e7", "sha512-idg8QNx/rG3MMVLwE2Dyz9N6O2ap7i6N3NVlY8gNDsTgtkL49pvs2g1LTFBgT8+i5SOEjTFmclTiwN3HPESO7A=="],
+    "@agfpd/iapeer": ["@agfpd/iapeer@0.4.165", "", { "dependencies": { "@modelcontextprotocol/sdk": "1.29.0", "@xterm/addon-serialize": "0.14.0", "@xterm/headless": "6.0.0", "ink": "^7.1.0", "proper-lockfile": "^4.1.2", "react": "^19.2.7", "react-devtools-core": "^7.0.1", "transliteration": "2.6.1" }, "bin": { "iapeer": "bin/iapeer" } }, "sha512-5kCQ3jnW4VrAZNqSUcwzE+a6Ji/TEy0+9owwBHFcbc4qbs9qBr5vhsUN2UDKmP90fnnWhONvlYGBVM5XMM6jxA=="],
 
     "@alcalzone/ansi-tokenize": ["@alcalzone/ansi-tokenize@0.3.1", "", { "dependencies": { "ansi-styles": "^6.2.1", "is-fullwidth-code-point": "^5.0.0" } }, "sha512-cUD0PT0YX+rImRhfn7BfMRduP/tX/Zqt/N0dHlAyn2RlcJssCb5KsCJkhln61eh9vuJDkH8wKn3L8zJzzWXPFg=="],
 

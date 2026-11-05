@@ -1,12 +1,12 @@
 {
   "name": "@agfpd/notifier-runtime",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/agfpd/notifier-runtime.git"
   },
   "devDependencies": {
-    "@agfpd/iapeer": "git+https://github.com/agfpd/iapeer.git#829c2e736a318d343bd7b6b45c0e073026b9e62a",
+    "@agfpd/iapeer": "0.4.165",
     "@types/bun": "latest",
     "typescript": "latest"
   },
@@ -33,7 +33,8 @@
     "self-config": "bun src/cli.ts self-config",
     "doctor": "bun src/cli.ts doctor --json",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "vendor:check": "bun scripts/vendor-peer-profile.ts --check"
   },
   "type": "module"
 }

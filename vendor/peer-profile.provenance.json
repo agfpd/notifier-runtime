@@ -1,7 +1,7 @@
 {
-  "coreCommit": "829c2e736a318d343bd7b6b45c0e073026b9e62a",
+  "coreCommit": "28dea1f460cde103e120ac28537db343a4929b21",
   "coreVersion": "0.4.165",
-  "dependency": "git+https://github.com/agfpd/iapeer.git#829c2e736a318d343bd7b6b45c0e073026b9e62a",
+  "dependency": "0.4.165",
   "bunVersion": "1.3.13",
   "protocol": 1,
   "entrySha256": "106ab68bc7af7011afe249007415ed1fedf02ce90b2afefecc53d1700c381727",

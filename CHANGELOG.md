@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-06
+
 ### Changed
 
 - Publication is dispatch-only with required accepted-archive SHA256; pinned official Node/npm reproduce the packed gzip bytes. CI proves the extracted archive and publishes that exact tarball, checks registry integrity, and supports verification-only dry runs.
