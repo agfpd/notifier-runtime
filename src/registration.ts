@@ -10,6 +10,7 @@ import {
 import { PeerProfileStore, type StoredTrigger } from './peerProfileStore.ts'
 import type { Transport } from './transport.ts'
 import { checkReachable, type Registry } from './reachability.ts'
+import { nextFire, parseWhen } from './when.ts'
 
 // ── Registration handler ────────────────────────────────────────────────────
 //
@@ -38,6 +39,7 @@ export interface RegistrationEnvelope {
 }
 
 export interface RegistrationDeps {
+  now?: () => Date
   store: PeerProfileStore
   transport: Transport
   // Re-project + live-reload the running engine. Called once after every
@@ -279,6 +281,28 @@ function dispatch(
   // is how mrbooker's `fallback: arthur` burned 7 weeks of fires (26.08–17.10).
   // Unverifiable links (not in the registry) pass with a warning in the reply.
   const warnings: string[] = []
+  // Validate a real future slot before mutating durable state. Syntax alone
+  // accepts impossible cron dates and intervals beyond JavaScript's Date range.
+  let schedule = ''
+  if (command.role === 'timer') {
+    try {
+      const now = deps.now?.() ?? new Date()
+      const parsed = parseWhen(command.config.when)
+      const next = nextFire(parsed, now)
+      if (parsed.kind === 'cron') {
+        schedule = `\nNext scheduled fire (preview from now): ${next.toISOString()} (${next.toString()}).`
+        schedule += '\nCron is recurring, has no year, and is NOT a one-shot reminder.'
+        if (next.getFullYear() > now.getFullYear()) {
+          warnings.push(`NEXT FIRE IS IN ${next.getFullYear()}, not ${now.getFullYear()}. Cron advances to the next matching date; missed dates are not replayed.`)
+        }
+      }
+    } catch (err) {
+      const msg = `notifier-timer: Registration rejected: invalid "when": ${err instanceof Error ? err.message : String(err)}. Nothing was changed.`
+      reply(deps, requester, msg, topic, ephemeral)
+      log('register-rejected-schedule', { requester, id: stored.id })
+      return { outcome: 'rejected', reply: msg, reloaded: false }
+    }
+  }
   if (deps.registry) {
     const reg = deps.registry()
     const errors: string[] = []
@@ -310,7 +334,9 @@ function dispatch(
   // the scheduler re-arms a changed `when` / retargets in place; the supervisor
   // stops the old script and streams with the new config.
   const live =
-    outcome === 'replaced'
+    !reloaded
+      ? 'Saved, but live reload was not confirmed; inspect notifier logs before relying on this trigger.'
+      : outcome === 'replaced'
       ? role === 'timer'
         ? 'Replace applied live — it fires on the new config, no restart needed.'
         : 'Replace applied live — old script tree is stopped (SIGTERM, SIGKILL after 3s); the new script starts only after the old one is gone — even if the script text is unchanged. No restart needed.'
@@ -322,7 +348,7 @@ function dispatch(
     (stored.topic ? ` (topic "${stored.topic}")` : '') +
     `. ${live}`
   const warn = warnings.length > 0 ? `\n⚠ ${warnings.join('\n⚠ ')}` : ''
-  const msg = `${header}${warn}\n\n${cliReply(role, requester, ownTriggers())}`
+  const msg = `${header}${schedule}${warn}\n\n${cliReply(role, requester, ownTriggers())}`
   reply(deps, requester, msg, topic, ephemeral)
   log(outcome === 'replaced' ? 'register-replaced' : 'registered', {
     requester,

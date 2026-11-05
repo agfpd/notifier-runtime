@@ -44,7 +44,9 @@ function parseIntStrict(token: string, field: string): number {
   if (!/^\d+$/.test(token)) {
     throw new Error(`invalid ${field} value "${token}": expected an integer`)
   }
-  return Number(token)
+  const value = Number(token)
+  if (!Number.isSafeInteger(value)) throw new Error(`invalid ${field}: integer exceeds safe range`)
+  return value
 }
 
 // Parse one cron field into the explicit set of matching numbers. Accepts a
@@ -181,6 +183,9 @@ function parseInterval(when: string): IntervalWhen {
   if (total < UNIT_MS.s) {
     throw new Error(`invalid interval "${when}": minimum duration is 1s`)
   }
+  if (!Number.isSafeInteger(total)) {
+    throw new Error(`invalid interval "${when}": duration exceeds safe integer milliseconds`)
+  }
   return { kind: 'interval', ms: total }
 }
 
@@ -249,6 +254,12 @@ function intervalNextFire(parsed: IntervalWhen, after: Date, anchor: Date): Date
 // required and defaults to `after` when omitted (treats `after` as the grid
 // origin → first fire at after+ms).
 export function nextFire(parsed: ParsedWhen, after: Date, anchor?: Date): Date {
-  if (parsed.kind === 'cron') return cronNextFire(parsed, after)
-  return intervalNextFire(parsed, after, anchor ?? after)
+  if (!Number.isFinite(after.getTime()) || (anchor && !Number.isFinite(anchor.getTime()))) {
+    throw new Error('cannot schedule from an invalid date')
+  }
+  const next = parsed.kind === 'cron'
+    ? cronNextFire(parsed, after)
+    : intervalNextFire(parsed, after, anchor ?? after)
+  if (!Number.isFinite(next.getTime())) throw new Error('next fire exceeds the supported date range')
+  return next
 }

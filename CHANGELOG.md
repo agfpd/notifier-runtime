@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-05
+
+### Fixed
+
+- Cron registration shows the next matching date with year and time zone, explicitly warns about a later year, and explains that cron is recurring, not one-shot. Impossible dates and interval overflow reject add/replace without changing existing triggers.
+- A check executable ignoring SIGTERM is hard-killed at timeout rather than indefinitely blocking timer. Synchronous registration replies now also have a hard CLI timeout. A failed live reload is no longer confirmed as live success.
+- Stage the manifest before publishing an installed binary; a late synchronous manifest-publication error restores the previous binary inode/signature or symlink. Double failure retains and reports recovery material. This does not provide crash-atomicity or concurrent-installer locking.
+
+### Added
+
+- Reproducible isolated native maintenance proof for installer failure/rollback, registration and actual timer/watcher run loops. No host trigger mutation or deployment.
+
 ## [0.6.1] - 2026-11-01
 
 ### Fixed

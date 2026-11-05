@@ -65,6 +65,8 @@ export function runCheck(check: string | undefined, opts: RunCheckOptions = {}):
   const result = spawnSync(check, [], {
     shell: false,
     timeout: timeoutMs,
+    // A gate ignoring SIGTERM must not freeze the entire synchronous scheduler.
+    killSignal: 'SIGKILL',
     // We only need the exit status; capturing output as strings keeps any
     // diagnostics available without binary-buffer handling.
     encoding: 'utf8',

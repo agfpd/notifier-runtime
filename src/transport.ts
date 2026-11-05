@@ -40,6 +40,7 @@ export interface IapTransportConfig {
   iapBin?: string
   cwd?: string
   env?: NodeJS.ProcessEnv
+  timeoutMs?: number
 }
 
 // Production transport: shells out to `iap send <target> --message-file - [--topic <t>]`
@@ -59,6 +60,8 @@ export function makeIapTransport(cfg: IapTransportConfig = {}): Transport {
         env: cfg.env,
         input: sig.message,
         encoding: 'utf8',
+        timeout: cfg.timeoutMs ?? SEND_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
       })
       if (result.error) {
         return { ok: false, error: result.error.message }
@@ -75,8 +78,7 @@ export function makeIapTransport(cfg: IapTransportConfig = {}): Transport {
 // ── Async transport (escalation path) ───────────────────────────────────────
 //
 // The sync transport above blocks the WHOLE notifier event loop for the full
-// duration of a send — and spawnSync carries no timeout, so a hung `iapeer
-// send` (e.g. a target stuck mid-wake) wedged the notifier forever. The
+// duration of a send (now bounded even for registration replies). The
 // escalation engine (escalation.ts) needs neither property: delivery attempts
 // run async (the scheduler tick / watcher forward path never waits on a wake)
 // and every attempt is bounded by a hard timeout (SEND_TIMEOUT_MS → SIGKILL →
@@ -87,7 +89,6 @@ export interface AsyncTransport {
 }
 
 export interface AsyncIapTransportConfig extends IapTransportConfig {
-  timeoutMs?: number
 }
 
 export function makeAsyncIapTransport(cfg: AsyncIapTransportConfig = {}): AsyncTransport {

@@ -358,6 +358,7 @@ export function describeFormat(role: Role): string {
       '   "target": <peer name | "self">, "check"?: <path>, "topic"?: <label>,',
       '   "fallback"?: <peer | [peer,…]>}',
       '  • when: 5-field cron ("0 9 * * *") or interval ("@every 30m").',
+      '    Cron is recurring, has no year, and is NOT one-shot. Confirm the next-fire date in the reply.',
       '  • message arrives in a NEW session → keep it self-contained.',
       '  • target "self" → your own profile (the requester). id optional (none → auto content-hash).',
       '  • check: one executable file, no arguments or shell expressions; fire only on exit 0.',

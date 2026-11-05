@@ -16,6 +16,14 @@ function makeScript(name: string, body: string): string {
 }
 
 describe('runCheck — UNIX exit semantics', () => {
+  test('timeout hard-kills a gate ignoring SIGTERM instead of wedging timer', () => {
+    const script = makeScript('ignore-term.sh', "trap '' TERM\nexec /bin/sleep 2")
+    const start = performance.now()
+    const r = runCheck(script, { timeoutMs: 100 })
+    expect(r.send).toBe(false)
+    expect(r.reason).toBe('check-timeout')
+    expect(performance.now() - start).toBeLessThan(1500)
+  })
   test('no check → unconditional send', () => {
     const r = runCheck(undefined)
     expect(r.send).toBe(true)

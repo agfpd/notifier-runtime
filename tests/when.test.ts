@@ -63,6 +63,9 @@ describe('parseWhen — invalid', () => {
     ['@every 10x', 'unknown unit'],
     ['@every 1h2', 'trailing garbage'],
     ['@hourly', 'unknown macro'],
+    ['@every 9007199254740992s', 'unsafe milliseconds'],
+    ['@every ' + '9'.repeat(400) + 'd', 'infinite duration'],
+    ['*/9007199254740992 * * * *', 'unsafe step'],
   ])('throws on %p (%s)', input => {
     expect(() => parseWhen(input)).toThrow()
   })
@@ -127,6 +130,11 @@ describe('nextFire — cron golden table (local time)', () => {
 })
 
 describe('nextFire — interval (anchored, skip-to-next)', () => {
+  test('rejects invalid dates and date overflow rather than returning Invalid Date', () => {
+    expect(() => nextFire(parseWhen('@every 1s'), new Date(NaN))).toThrow('invalid date')
+    expect(() => nextFire(parseWhen('@every 9000000000000s'), new Date())).toThrow('date range')
+    expect(() => nextFire(parseWhen('@every 1s'), new Date(), new Date(NaN))).toThrow('invalid date')
+  })
   test('first slot is anchor + ms', () => {
     const p = parseWhen('@every 30m')
     const anchor = local(2026, 6, 6, 10, 0)

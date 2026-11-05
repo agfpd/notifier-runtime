@@ -57,6 +57,7 @@ notifier-runtime doctor
 - **Owned and isolated.** A trigger belongs to the peer that registered it. A peer can only list, edit, and remove its own — a security boundary, not a convention.
 - **Escalation, not loss.** An undelivered signal is retried and escalated down a chain — fallback, owner, backstop — and a signal that can't reach anyone is written to a durable dead-letter file.
 - **Crash-safe.** Signals are written to a write-ahead spool before delivery, so a restart mid-chain re-drains them instead of stranding them.
+- **Visible schedule dates.** Cron registration previews the next fire with year/time zone and warns about a rollover to a later year. Cron is recurring, not one-shot; impossible dates are rejected before saving.
 - **Storm-proof.** A watcher flooding lines (a feedback loop, a broken source) trips a per-watcher rate breaker: the watcher stops, its queued undelivered forwards are cancelled as dead-letters, and the owner gets one alert instead of hundreds. Byte-identical unsent watcher/alert signals coalesce with a counter. Timer occurrences and signals already in native custody remain independent.
 - **Self-correcting input.** A malformed registration replies with the exact problem plus the format and worked examples, so the sender fixes it from the reply alone.
 

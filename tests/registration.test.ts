@@ -61,6 +61,56 @@ describe('handleEnvelope — register asks for a restart of its own key', () => 
 })
 
 describe('handleEnvelope — register (timer)', () => {
+  test('past calendar cron warns about next year and recurrence with explicit timestamp', () => {
+    const { store } = makeFs({ '/reg/index.json': REGISTRY })
+    const transport = new FakeTransport()
+    const now = () => new Date(2026, 10, 5, 14, 0)
+    const r = handleEnvelope(env({ message: JSON.stringify({ when: '0 13 5 11 *', message: 'm', target: 'self' }) }),
+      'timer', { store, transport, now, reloadCb: () => {} })
+    expect(r.outcome).toBe('registered')
+    expect(r.reply).toContain('NEXT FIRE IS IN 2027, not 2026')
+    expect(r.reply).toContain('NOT a one-shot')
+    expect(r.reply).toContain(new Date(2027, 10, 5, 13, 0).toISOString())
+  })
+
+  test('this-year cron shows next fire without false rollover warning', () => {
+    const { store } = makeFs({ '/reg/index.json': REGISTRY })
+    const r = handleEnvelope(env({ message: JSON.stringify({ when: '0 15 5 11 *', message: 'm', target: 'self' }) }),
+      'timer', { store, transport: new FakeTransport(), now: () => new Date(2026, 10, 5, 14, 0) })
+    expect(r.reply).toContain('Next scheduled fire')
+    expect(r.reply).not.toContain('NEXT FIRE IS IN')
+    expect(r.reply).toContain('live reload was not confirmed')
+  })
+
+  test('impossible cron and overflowing interval reject add/replace without mutation or reload', () => {
+    const { store, files, writes } = makeFs({ '/reg/index.json': REGISTRY })
+    const transport = new FakeTransport()
+    let reloads = 0
+    const deps = { store, transport, reloadCb: () => reloads++ }
+    const config = { id: 'safe', when: '@every 30m', message: 'old', target: 'self' }
+    handleEnvelope(env({ message: JSON.stringify(config) }), 'timer', deps)
+    const before = JSON.stringify(files)
+    const n = writes.length
+    for (const id of ['safe', 'new']) for (const when of ['0 0 30 2 *', '@every 9000000000000s']) {
+      const r = handleEnvelope(env({ message: JSON.stringify({ ...config, id, when }) }), 'timer', deps)
+      expect(r.outcome).toBe('rejected')
+      expect(r.reply).toContain('Nothing was changed')
+      expect(r.reloaded).toBe(false)
+    }
+    expect(JSON.stringify(files)).toBe(before)
+    expect(writes.length).toBe(n)
+    expect(reloads).toBe(1)
+  })
+
+  test('reload failure is not reported as live success', () => {
+    const { store } = makeFs({ '/reg/index.json': REGISTRY })
+    const r = handleEnvelope(env({ message: JSON.stringify({ when: '@every 1h', message: 'm', target: 'self' }) }),
+      'timer', { store, transport: new FakeTransport(), reloadCb: () => { throw new Error('broken') } })
+    expect(r.outcome).toBe('registered')
+    expect(r.reloaded).toBe(false)
+    expect(r.reply).toContain('live reload was not confirmed')
+    expect(r.reply).not.toContain('no restart needed')
+  })
   test('invalid check rejects before write/reload, including same-id replace', () => {
     for (const existing of [false, true]) {
       const { files, store, writes } = makeFs({ '/reg/index.json': REGISTRY })

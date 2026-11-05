@@ -21,6 +21,15 @@ describe('FakeTransport', () => {
 })
 
 describe('makeIapTransport — argv/env/stdin golden (stub binary, no real iap)', () => {
+  test('registration reply timeout kills a TERM-ignoring CLI', () => {
+    const bin = join(work, 'hung-reply')
+    writeFileSync(bin, "#!/bin/sh\ntrap '' TERM\nexec /bin/sleep 2\n", { mode: 0o755 })
+    const start = performance.now()
+    const r = makeIapTransport({ iapBin: bin, timeoutMs: 100 }).send({ target: 'boris', message: 'reply' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toBeDefined()
+    expect(performance.now() - start).toBeLessThan(1500)
+  })
   // Stub `iap` that records argv, stdin and a couple of env vars to a file, so
   // we can assert the exact command shape without touching a live peer.
   function makeStub(name: string, exitCode = 0): { bin: string; out: string } {

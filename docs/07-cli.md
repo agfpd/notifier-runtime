@@ -31,6 +31,8 @@ a promise that every invalid binary can be repaired. Apple's
 [code signing guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/Procedures/Procedures.html)
 describes strict verification.
 
+Binary and manifest publication also handles synchronous filesystem errors: the manifest is staged before publication, and a late manifest rename failure restores the previous binary inode/signature (or legacy symlink), or removes a first-install binary. A double publication/rollback failure reports the retained recovery path. This is **not** crash-atomic across two files: power loss, SIGKILL during publication and concurrent installers are outside the guarantee. No running timer/watcher is restarted by this helper.
+
 ## `run`
 
 The always-on run-loop — the entrypoint iapeer's launcher starts under launchd. It dispatches on the resolved personality: `timer` runs the scheduler (TIME), `watcher` runs the supervisor (EVENT). The loop loads the peer's triggers, re-drains any signals stranded in the spool by a previous process, listens for registration messages on stdin, and fires triggers as they come due. It shuts down cleanly on SIGINT/SIGTERM.

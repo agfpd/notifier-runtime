@@ -41,6 +41,8 @@ Day-of-month and day-of-week follow the standard Vixie-cron OR rule: when **both
 
 The schedule runs in the host's local time. There is no special daylight-saving handling; on a host without DST (for example UTC+3) this never matters.
 
+**Cron is recurring, not one-shot, and has no year field.** A date already past advances to its next match, possibly next year. Registration shows a next-fire preview in UTC and local time (including year/time zone), and warns explicitly when it is in a later year. Check this date before relying on a reminder. For one delivery, unregister the trigger after the intended fire; there is no one-shot schedule syntax. Impossible dates such as `0 0 30 2 *` are rejected before adding or replacing a trigger.
+
 ### Intervals
 
 `@every <duration>` fires on a fixed period:
@@ -53,6 +55,8 @@ The schedule runs in the host's local time. There is no special daylight-saving 
 ```
 
 Units are `s`, `m`, `h`, `d`, and they add up when combined. The minimum interval is one second. An interval is anchored when the trigger starts (or re-arms on edit) and counts forward from there — not from the top of the clock.
+
+Durations must fit safe integer milliseconds and produce a valid future JavaScript date. Overflow is rejected rather than creating an inert trigger.
 
 ### Missed fires collapse
 
@@ -85,6 +89,8 @@ test -s /absolute/path/queue.txt
 Make it executable (`chmod +x /absolute/path/queue-nonempty`) and register its path. `"check":"/bin/test -s /absolute/path/queue.txt"` is **not** a command line: timer would look for a file with that entire name, so registration rejects it. In contrast, `"check":"/absolute/path with spaces/queue-nonempty"` is valid if that exact file is executable. The script's environment is timer's environment; use absolute paths to its dependencies too.
 
 At fire time the check remains fail-safe: if it cannot run (including a file removed after registration), times out, or is killed by a signal, the fire is **skipped**, never sent, and the failure is logged loudly. The check has a 30-second timeout. A preflight cannot eliminate changes between registration and execution. See the [Node.js spawn contract](https://nodejs.org/api/child_process.html#child_processspawnsynccommand-args-options) and [execute-permission probe](https://nodejs.org/api/fs.html#fsaccesssyncpath-mode).
+
+The timeout uses SIGKILL so an executable ignoring SIGTERM cannot indefinitely block timer. This is not process-tree containment: keep gates short and avoid spawning background work.
 
 ## Fields
 

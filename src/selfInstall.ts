@@ -18,13 +18,14 @@
 
 import { spawnSync } from 'child_process'
 import { randomUUID } from 'crypto'
-import { chmodSync, copyFileSync, mkdirSync, renameSync, rmSync, statSync } from 'fs'
+import { chmodSync, copyFileSync, mkdirSync, rmSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import pkg from '../package.json'
 import { RUNTIME } from './constants.ts'
 import { scaffoldHostDocs, type ScaffoldDocsResult } from './hostDocs.ts'
-import { buildManifest, resolveIapeerRoot, writeManifestAtomic } from './manifest.ts'
+import { buildManifest, resolveIapeerRoot } from './manifest.ts'
+import { publishInstallPair } from './installPair.ts'
 import {
   commandFailure, ensureExecutableSignature, type ExecutableSignatureMode, type InstallCommandRunner,
 } from './installSignature.ts'
@@ -105,6 +106,7 @@ export function selfInstall(opts: SelfInstallOptions = {}): SelfInstallResult {
   const tmp = `${binPath}.tmp.${process.pid}.${randomUUID()}`
   let binMode: SelfInstallBinMode
   let signature: ExecutableSignatureMode
+  let manifestPath: string
 
   try {
     if (isCompilableSource(sourceEntry) && isBunInterpreter(execPath)) {
@@ -125,16 +127,12 @@ export function selfInstall(opts: SelfInstallOptions = {}): SelfInstallResult {
 
     chmodSync(tmp, 0o755)
     signature = ensureExecutableSignature(tmp, { platform: opts.platform, env, run })
-    renameSync(tmp, binPath)
+    manifestPath = publishInstallPair(tmp, binPath, buildManifest(binPath), env)
   } finally {
     // Includes partial compile/copy, chmod, signature, and rename failures. Do
     // not leave unsigned/invalid .dead binaries alongside the installed one.
     rmSync(tmp, { force: true })
   }
-
-  // Manifest pins the ABSOLUTE installed bin into the self-config descriptor.
-  const manifest = buildManifest(binPath)
-  const manifestPath = writeManifestAtomic(manifest, env)
 
   // FU6: stage this package's docs to <root>/docs/notifier-runtime/ (best-effort,
   // never blocks install). docsSource is the package's docs/ dir resolved from the
