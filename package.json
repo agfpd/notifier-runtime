@@ -1,24 +1,29 @@
 {
   "name": "@agfpd/notifier-runtime",
   "version": "0.6.2",
-  "description": "Notifier runtime-router for IAP peers — time (cron/heartbeat) and event (watcher) primitives.",
-  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/agfpd/notifier-runtime.git"
   },
-  "type": "module",
+  "devDependencies": {
+    "@agfpd/iapeer": "git+https://github.com/agfpd/iapeer.git#829c2e736a318d343bd7b6b45c0e073026b9e62a",
+    "@types/bun": "latest",
+    "typescript": "latest"
+  },
   "bin": {
     "notifier-runtime": "bin/notifier-runtime"
   },
+  "description": "Notifier runtime-router for IAP peers — time (cron/heartbeat) and event (watcher) primitives.",
   "files": [
     "CHANGELOG.md",
     "bin/",
     "docs/",
     "src/",
+    "vendor/",
     "scripts/proof-maintenance.ts",
     "tsconfig.json"
   ],
+  "license": "Apache-2.0",
   "publishConfig": {
     "access": "public"
   },
@@ -30,11 +35,5 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
-  "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "latest"
-  },
-  "dependencies": {
-    "@agfpd/iapeer": "git+https://github.com/agfpd/iapeer.git#95a08490f8f868ce39c0f89413e1ca75fb63ee24"
-  }
+  "type": "module"
 }

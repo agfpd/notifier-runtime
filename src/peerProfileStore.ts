@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'fs'
-import { patchPeerProfile } from '@agfpd/iapeer/peer-profile'
+import { patchPeerProfile } from '../vendor/peer-profile.js'
 import { resolveIapeerRoot } from './manifest.ts'
 import { join } from 'path'
 

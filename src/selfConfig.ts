@@ -22,7 +22,7 @@
 // provisioned (especially `intelligence`=absent and `personality`) — it only sets the
 // rich `description`. Identity is the foundation's to provision; the hook must not clobber it.
 
-import { patchPeerProfile } from '@agfpd/iapeer/peer-profile'
+import { patchPeerProfile } from '../vendor/peer-profile.js'
 import { join } from 'path'
 import { type Role } from './format.ts'
 import { resolvePersonality } from './identity.ts'

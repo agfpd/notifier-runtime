@@ -62,12 +62,18 @@ jobs:
         run: |
           node --input-type=module -e '
             import p from "./package.json" with {type:"json"};
-            const core = p.dependencies?.["@agfpd/iapeer"];
+            if (p.dependencies?.["@agfpd/iapeer"] || p.bundledDependencies?.includes("@agfpd/iapeer")) {
+              throw new Error("core must remain dev-only; ship only the generated profile leaf");
+            }
+            const core = p.devDependencies?.["@agfpd/iapeer"];
             if (core && !/^\d+\.\d+\.\d+$/.test(core)) {
               throw new Error("release requires exact registry @agfpd/iapeer, not a git/local/range dependency");
             }
           '
       - run: bun install --frozen-lockfile
+      - name: Verify generated core leaf
+        run: |
+          if [ -f scripts/vendor-peer-profile.ts ]; then bun scripts/vendor-peer-profile.ts --check; fi
       - run: bun run test
       - run: bun run typecheck
       - name: Pack and check the accepted sha256

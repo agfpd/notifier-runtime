@@ -63,9 +63,11 @@ test('release dependency gate rejects git/local/range pins and allows exact regi
   try {
     const script = steps.find(s => s.name === 'Release core dependency is an exact registry version')!.run!
     for (const pin of [undefined, '0.4.165', 'git+https://github.com/agfpd/iapeer.git#95a0849', 'file:../iapeer', '^0.4.165']) {
-      writeFileSync(join(root, 'package.json'), JSON.stringify({ dependencies: pin ? { '@agfpd/iapeer': pin } : {} }))
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ devDependencies: pin ? { '@agfpd/iapeer': pin } : {} }))
       const result = spawnSync('/bin/bash', ['-e', '-o', 'pipefail', '-c', script], { cwd: root, encoding: 'utf8' })
       expect(result.status === 0, result.stderr).toBe(pin === undefined || pin === '0.4.165')
     }
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ dependencies: { '@agfpd/iapeer': '0.4.165' } }))
+    expect(spawnSync('/bin/bash', ['-e', '-c', script], { cwd: root }).status).not.toBe(0)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

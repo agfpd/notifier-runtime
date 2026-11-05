@@ -73,12 +73,17 @@ The runtime is not a standalone scheduler. It requires iapeer to provision it, l
 ## Cooperative profile writes
 
 Registration and removal patch `notifier.triggers`; self-config patches
-`description`. Both use core's `patchPeerProfile` from the lightweight
-`@agfpd/iapeer/peer-profile` export. The current raw object is read and changed
+`description`. Both use core's `patchPeerProfile` from the generated standalone
+`vendor/peer-profile.js` leaf. Core is a development-only dependency, not shipped
+as a runtime dependency. `vendor/peer-profile.provenance.json` records the accepted
+core commit, source/bundle SHA256, protocol and pinned Bun version; CI regenerates
+and compares bytes. The current raw object is read and changed
 inside core's shared `.iapeer/.peer-profile.lock`, never merged from an earlier
 snapshot. Removal checks owner and role inside that transaction. Other profile
 fields and unknown notifier keys survive. Invalid JSON, filesystem errors and
 lock timeout fail closed; unchanged objects are not rewritten.
+Protocol 1 is persisted in `.iapeer/.peer-profile.protocol` and checked inside
+the shared lock; an incompatible marker fails closed rather than mixing writers.
 
 This is cooperative, not protection against legacy full-file writers. Deploy
 with the corresponding core and all other profile-writing packages in one

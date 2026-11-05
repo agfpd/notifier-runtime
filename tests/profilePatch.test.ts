@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { PeerProfileStore } from '../src/peerProfileStore.ts'
 import { runSelfConfig } from '../src/selfConfig.ts'
+import { patchPeerProfile } from '../vendor/peer-profile.js'
 
 function sandbox() {
   const cwd = mkdtempSync(join(tmpdir(), 'notifier-profile-patch-'))
@@ -50,6 +51,32 @@ test('held core lock rejects notifier write after timeout without touching profi
     mkdirSync(join(cwd, '.iapeer/.peer-profile.lock'))
     expect(() => new PeerProfileStore().upsert(cwd, { id: 'x', role: 'time', owner: 'probe', target: 'probe' })).toThrow(/lock timeout/)
     expect(readFileSync(path, 'utf8')).toBe('{"foreign":"keep"}\n')
+  } finally { rmSync(cwd, { recursive: true, force: true }) }
+})
+
+test('protocol mismatch rejects every writer without touching profile or marker', () => {
+  const { cwd, path } = sandbox()
+  try {
+    writeFileSync(path, '{"foreign":"keep"}\n')
+    const protocol = join(cwd, '.iapeer/.peer-profile.protocol')
+    writeFileSync(protocol, '2\n')
+    const store = new PeerProfileStore()
+    expect(() => store.upsert(cwd, { id: 'x', role: 'time', owner: 'probe', target: 'probe' })).toThrow(/protocol mismatch/)
+    expect(() => store.remove(cwd, 'x')).toThrow(/protocol mismatch/)
+    expect(() => runSelfConfig({ cwd, env: {} })).toThrow(/protocol mismatch/)
+    expect(readFileSync(path, 'utf8')).toBe('{"foreign":"keep"}\n')
+    expect(readFileSync(protocol, 'utf8')).toBe('2\n')
+  } finally { rmSync(cwd, { recursive: true, force: true }) }
+})
+
+test('protocol marker is checked only after acquiring the shared lock', () => {
+  const { cwd, path } = sandbox()
+  try {
+    writeFileSync(path, '{}')
+    writeFileSync(join(cwd, '.iapeer/.peer-profile.protocol'), '2\n')
+    mkdirSync(join(cwd, '.iapeer/.peer-profile.lock'))
+    expect(() => patchPeerProfile(cwd, raw => { raw.changed = true })).toThrow(/lock timeout/)
+    expect(readFileSync(path, 'utf8')).toBe('{}')
   } finally { rmSync(cwd, { recursive: true, force: true }) }
 })
 

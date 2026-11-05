@@ -7,9 +7,20 @@ checkout, and publishes that exact file. It then checks registry SHA512 integrit
 
 ## Prepare the candidate
 
-Before packing, pin `@agfpd/iapeer` to the accepted exact registry version.
+Before packing, pin the development-only `@agfpd/iapeer` to the accepted exact registry version.
 Temporary immutable git-SHA dependencies are for consumer-branch CI only, not
 release archives; the publication workflow rejects them.
+Generate the standalone leaf with pinned Bun 1.3.13 and record the accepted
+core commit (required for registry dependencies):
+
+```sh
+bun scripts/vendor-peer-profile.ts --core-commit ACCEPTED_CORE_COMMIT
+bun scripts/vendor-peer-profile.ts --check
+```
+
+Commit the JS, minimal declaration and provenance together. CI regenerates the
+bundle and compares its bytes and source provenance. Core must not become a
+production/bundled dependency; the archive ships only the generated leaf.
 Run tests and typecheck, commit, and create a version tag matching package.json.
 Use a clean checkout of that tag. Pack with **official Node 26.4.0 and npm 11.17.0**,
 matching the pinned workflow tools:

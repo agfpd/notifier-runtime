@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Publication is dispatch-only with required accepted-archive SHA256; pinned official Node/npm reproduce the packed gzip bytes. CI proves the extracted archive and publishes that exact tarball, checks registry integrity, and supports verification-only dry runs.
-- Trigger registration/removal and self-config patch only owned profile fields through core's cooperative transaction. Reads and role-scoped removal checks run inside the lock; malformed profiles and lock errors fail closed, and no-op updates preserve the file.
+- Trigger registration/removal and self-config patch only owned profile fields through core's generated standalone cooperative transaction leaf, without a production core dependency. Reads, protocol checks and role-scoped removal checks run inside the lock; malformed profiles, protocol mismatch and lock errors fail closed, and no-op updates preserve the file. CI regenerates the leaf and verifies provenance.
 
 ## [0.6.2] - 2026-11-05
 
