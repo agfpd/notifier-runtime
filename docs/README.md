@@ -26,4 +26,6 @@ This is the package documentation: what the runtime is, how to register triggers
 
 ## License
 
+Maintainers: [release handoff and accepted-archive gate](releasing.md).
+
 Apache-2.0. Platform: macOS. notifier-runtime is the time-primitive runtime for the [iapeer](https://github.com/agfpd/iapeer) ecosystem — a component of iapeer, not a standalone system.
