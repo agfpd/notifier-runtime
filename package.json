@@ -33,5 +33,8 @@
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "latest"
+  },
+  "dependencies": {
+    "@agfpd/iapeer": "git+https://github.com/agfpd/iapeer.git#95a08490f8f868ce39c0f89413e1ca75fb63ee24"
   }
 }

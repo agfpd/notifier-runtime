@@ -68,8 +68,11 @@ describe('register — dead link in the chain (hole 1)', () => {
       profilePathFor: cwd => `${cwd}/.iapeer/peer-profile.json`,
       readFile: p => files[p]!,
       fileExists: p => p in files,
-      writeFile: (p, c) => {
-        files[p] = c
+      patchProfile: (cwd, mutate) => {
+        const p = `${cwd}/.iapeer/peer-profile.json`
+        const raw = JSON.parse(files[p] ?? '{}')
+        mutate(raw)
+        files[p] = JSON.stringify(raw)
       },
     })
     return { files, store }

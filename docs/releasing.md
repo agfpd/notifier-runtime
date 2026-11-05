@@ -7,6 +7,9 @@ checkout, and publishes that exact file. It then checks registry SHA512 integrit
 
 ## Prepare the candidate
 
+Before packing, pin `@agfpd/iapeer` to the accepted exact registry version.
+Temporary immutable git-SHA dependencies are for consumer-branch CI only, not
+release archives; the publication workflow rejects them.
 Run tests and typecheck, commit, and create a version tag matching package.json.
 Use a clean checkout of that tag. Pack with **official Node 26.4.0 and npm 11.17.0**,
 matching the pinned workflow tools:
@@ -26,7 +29,8 @@ the resulting archive, never bypassing the hash check.
 Extract the candidate in a scratch directory and run:
 
 ```sh
-bun package/scripts/proof-maintenance.ts --receipt /absolute/release-dir/proof.json
+(cd package && bun install --production --ignore-scripts && \
+  bun scripts/proof-maintenance.ts --receipt /absolute/release-dir/proof.json)
 ```
 
 This proof runs real signed binaries and scripts with isolated runtime state and

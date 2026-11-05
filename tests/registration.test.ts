@@ -21,8 +21,13 @@ function makeFs(initial: Record<string, string> = {}): {
       return files[p]!
     },
     fileExists: p => p in files,
-    writeFile: (p, content) => {
-      files[p] = content
+    patchProfile: (cwd, mutate) => {
+      const p = `${cwd}/.iapeer/peer-profile.json`
+      const raw = JSON.parse(files[p] ?? '{}')
+      const before = JSON.stringify(raw)
+      mutate(raw)
+      if (JSON.stringify(raw) === before) return
+      files[p] = `${JSON.stringify(raw, null, 2)}\n`
       writes.push(p)
     },
   })
@@ -37,6 +42,25 @@ const REGISTRY = JSON.stringify({
     { personality: 'boris', cwd: '/peers/boris' },
     { personality: 'arthur', cwd: '/peers/arthur' },
   ],
+})
+
+test('profile transaction failure replies with rejection and never reloads', () => {
+  const store = new PeerProfileStore({
+    peersIndexPath: '/reg/index.json',
+    readFile: () => REGISTRY,
+    fileExists: p => p === '/reg/index.json',
+    patchProfile: () => { throw new Error('peer-profile lock timeout') },
+  })
+  const transport = new FakeTransport()
+  let reloads = 0
+  const result = handleEnvelope({ fromPersonality: 'boris', message: JSON.stringify({
+    id: 'x', when: '@every 1m', message: 'hello', target: 'self',
+  }) }, 'timer', { store, transport, reloadCb: () => { reloads++ } })
+  expect(result.outcome).toBe('rejected')
+  expect(result.reply).toContain('peer-profile lock timeout')
+  expect(result.reloaded).toBe(false)
+  expect(reloads).toBe(0)
+  expect(transport.sent).toHaveLength(1)
 })
 
 function env(over: Partial<RegistrationEnvelope> & { message: string }): RegistrationEnvelope {

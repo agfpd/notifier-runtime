@@ -22,7 +22,11 @@ test('publishing is manual, hash-gated, and publishes the checked archive only',
   const proof = steps.find(s => s.name === 'Native proof from the archive, outside the checkout')!
   expect(steps.indexOf(proof)).toBeGreaterThan(steps.indexOf(gate))
   expect(steps.indexOf(proof)).toBeLessThan(steps.indexOf(publish))
-  expect(proof.run).toContain('bun package/scripts/proof-maintenance.ts')
+  expect(proof.run).toContain('bun install --production --ignore-scripts')
+  expect(proof.run).toContain('bun scripts/proof-maintenance.ts')
+  const dependencyGate = steps.find(s => s.name === 'Release core dependency is an exact registry version')!
+  expect(steps.indexOf(dependencyGate)).toBeLessThan(steps.indexOf(gate))
+  expect(dependencyGate.run).toContain('release requires exact registry @agfpd/iapeer')
   expect(steps.find(s => s.name === 'Registry integrity equals the published archive')!.if).toBe(publish.if)
 })
 
@@ -53,3 +57,15 @@ for (const variant of ['matching', 'mismatched', 'malformed'] as const) {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 }
+
+test('release dependency gate rejects git/local/range pins and allows exact registry pin', () => {
+  const root = mkdtempSync(join(tmpdir(), 'notifier-release-dep-'))
+  try {
+    const script = steps.find(s => s.name === 'Release core dependency is an exact registry version')!.run!
+    for (const pin of [undefined, '0.4.165', 'git+https://github.com/agfpd/iapeer.git#95a0849', 'file:../iapeer', '^0.4.165']) {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ dependencies: pin ? { '@agfpd/iapeer': pin } : {} }))
+      const result = spawnSync('/bin/bash', ['-e', '-o', 'pipefail', '-c', script], { cwd: root, encoding: 'utf8' })
+      expect(result.status === 0, result.stderr).toBe(pin === undefined || pin === '0.4.165')
+    }
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})

@@ -69,3 +69,21 @@ From then on launchd keeps the two peers running. Each runs `notifier-runtime ru
 - **iapeer owns:** the peer registry, the launchd jobs, the boot sequence, identity provisioning, and the `iapeer send` transport the runtime delivers through.
 
 The runtime is not a standalone scheduler. It requires iapeer to provision it, launch it, and carry its signals.
+
+## Cooperative profile writes
+
+Registration and removal patch `notifier.triggers`; self-config patches
+`description`. Both use core's `patchPeerProfile` from the lightweight
+`@agfpd/iapeer/peer-profile` export. The current raw object is read and changed
+inside core's shared `.iapeer/.peer-profile.lock`, never merged from an earlier
+snapshot. Removal checks owner and role inside that transaction. Other profile
+fields and unknown notifier keys survive. Invalid JSON, filesystem errors and
+lock timeout fail closed; unchanged objects are not rewritten.
+
+This is cooperative, not protection against legacy full-file writers. Deploy
+with the corresponding core and all other profile-writing packages in one
+operator-controlled migration window. Notifier's long-lived writers are the
+`timer` and `watcher` run loops (registration envelopes); `self-config` is a
+one-shot writer invoked by provisioning. There is no separate prepare or
+background profile writer. Stop/restart both run loops during the coordinated
+cutover; merely replacing their installed binary leaves their old code alive.

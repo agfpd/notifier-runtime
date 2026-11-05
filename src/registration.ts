@@ -205,7 +205,15 @@ export function handleEnvelope(
     return { outcome: 'rejected', reply: msg, reloaded: false }
   }
 
-  return dispatch(parsed.command, role, requester, cwd, topic, deps, ephemeral)
+  try {
+    return dispatch(parsed.command, role, requester, cwd, topic, deps, ephemeral)
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    const msg = `notifier-${role}: profile operation failed: ${error}. Inspect the profile before retrying; no successful live reload is confirmed.`
+    reply(deps, requester, msg, topic, ephemeral)
+    log('profile-error', { requester, error })
+    return { outcome: 'rejected', reply: msg, reloaded: false }
+  }
 }
 
 function dispatch(
@@ -251,17 +259,13 @@ function dispatch(
   }
 
   if (command.kind === 'unregister') {
-    // Role-scope the unregister: a timer session deleting a watcher id (or vice
-    // versa) must be a no-op (not-found), not a cross-role delete. Pre-check the
-    // stored trigger's role before removing so an id that exists but belongs to
-    // the other role is treated as absent (→ not-found reply).
-    const existing = deps.store.list(cwd).find(t => t.owner === requester && t.id === command.id)
-    if ((existing && existing.role !== sessionRole) || !deps.store.remove(cwd, command.id)) {
+    // Role and owner checks belong inside the transaction, not a stale pre-read.
+    if (!deps.store.remove(cwd, command.id, sessionRole, requester)) {
       const msg =
         `notifier-${role}: no trigger with id "${command.id}" in your profile (nothing removed).\n\n` +
         cliReply(role, requester, ownTriggers())
       reply(deps, requester, msg, topic, ephemeral)
-      log('unregister-not-found', { requester, id: command.id, ...(existing ? { otherRole: existing.role } : {}) })
+      log('unregister-not-found', { requester, id: command.id })
       return { outcome: 'not-found', reply: msg, reloaded: false }
     }
     const reloaded = runReload(deps, log)

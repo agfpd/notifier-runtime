@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
-import { randomUUID } from 'crypto'
+import { existsSync, readFileSync } from 'fs'
+import { patchPeerProfile } from '@agfpd/iapeer/peer-profile'
 import { resolveIapeerRoot } from './manifest.ts'
-import { dirname, join } from 'path'
+import { join } from 'path'
 
 // ── Peer-profile trigger store ──────────────────────────────────────────────
 //
@@ -13,7 +13,7 @@ import { dirname, join } from 'path'
 //
 // This module:
 //   1. locates a peer's cwd via the registry (~/.iapeer/peers-profiles.json),
-//   2. read-merge-writes notifier.triggers[] atomically (tmp+rename), PRESERVING
+//   2. patches notifier.triggers[] under core's cooperative profile lock, PRESERVING
 //      every unknown top-level field of the profile (description, intelligence,
 //      interfaces, …) — exactly the round-trip discipline telegram-runtime's
 //      writePeerProfile uses. Losing unknown fields would silently corrupt a
@@ -52,9 +52,9 @@ export interface PeerProfileStoreDeps {
   profilePathFor?: (cwd: string) => string
   readFile?: (path: string) => string
   fileExists?: (path: string) => boolean
-  // Atomic write. Default: tmp + rename. Injectable so tests capture writes
-  // without touching disk.
-  writeFile?: (path: string, content: string) => void
+  // Transaction boundary, injectable for in-memory tests. Production always
+  // uses core's cooperative lock; there is no unlocked fallback.
+  patchProfile?: typeof patchPeerProfile
 }
 
 class PeerProfileStoreError extends Error {}
@@ -67,29 +67,19 @@ function defaultPeersIndexPath(): string {
   return join(resolveIapeerRoot(), 'peers-profiles.json')
 }
 
-// Atomic write: tmp + rename, so a reader never observes a half-written profile
-// (and a crash mid-write leaves the old file intact). Mirrors telegram-runtime's
-// writeJsonAtomic.
-function defaultWriteFile(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`
-  writeFileSync(tmp, content, { mode: 0o600 })
-  renameSync(tmp, path)
-}
-
 export class PeerProfileStore {
   private peersIndexPath: string
   private profilePathFor: (cwd: string) => string
   private readFile: (path: string) => string
   private fileExists: (path: string) => boolean
-  private writeFile: (path: string, content: string) => void
+  private patchProfile: typeof patchPeerProfile
 
   constructor(deps: PeerProfileStoreDeps = {}) {
     this.peersIndexPath = deps.peersIndexPath ?? defaultPeersIndexPath()
     this.profilePathFor = deps.profilePathFor ?? defaultProfilePath
     this.readFile = deps.readFile ?? ((p: string) => readFileSync(p, 'utf8'))
     this.fileExists = deps.fileExists ?? ((p: string) => existsSync(p))
-    this.writeFile = deps.writeFile ?? defaultWriteFile
+    this.patchProfile = deps.patchProfile ?? patchPeerProfile
   }
 
   // Resolve a personality → its registered cwd via the registry. Returns null
@@ -137,8 +127,7 @@ export class PeerProfileStore {
     return triggers
   }
 
-  // Read the whole profile object + the current triggers array. The full object
-  // is returned so a write can MERGE over it, preserving every unknown field.
+  // Read-only view. Mutations obtain their own current view inside patchProfile.
   private readProfile(cwd: string): { profile: Record<string, unknown>; triggers: StoredTrigger[] } {
     const path = this.profilePathFor(cwd)
     if (!this.fileExists(path)) return { profile: {}, triggers: [] }
@@ -154,27 +143,25 @@ export class PeerProfileStore {
       return { profile: {}, triggers: [] }
     }
     const profile = raw as Record<string, unknown>
+    return { profile, triggers: this.triggersFrom(profile) }
+  }
+
+  private triggersFrom(profile: Record<string, unknown>): StoredTrigger[] {
     const notifier = profile.notifier
     const arr =
       notifier && typeof notifier === 'object' && Array.isArray((notifier as { triggers?: unknown }).triggers)
         ? ((notifier as { triggers: unknown[] }).triggers as StoredTrigger[])
         : []
-    return { profile, triggers: arr }
+    return arr
   }
 
-  // Persist a new triggers array into the peer's profile, MERGING over the
-  // existing profile so unknown top-level fields survive. Also preserves unknown
-  // keys INSIDE the `notifier` block (only `triggers` is rewritten). Atomic.
-  private writeTriggers(cwd: string, triggers: StoredTrigger[], profile: Record<string, unknown>): void {
+  // Mutate only our subtree on the raw object supplied inside core's lock.
+  private writeTriggers(triggers: StoredTrigger[], profile: Record<string, unknown>): void {
     const existingNotifier =
       profile.notifier && typeof profile.notifier === 'object' && !Array.isArray(profile.notifier)
         ? (profile.notifier as Record<string, unknown>)
         : {}
-    const merged: Record<string, unknown> = {
-      ...profile,
-      notifier: { ...existingNotifier, triggers },
-    }
-    this.writeFile(this.profilePathFor(cwd), `${JSON.stringify(merged, null, 2)}\n`)
+    profile.notifier = { ...existingNotifier, triggers }
   }
 
   // Add or REPLACE a trigger by id (re-registering the same id
@@ -182,27 +169,30 @@ export class PeerProfileStore {
   // the owner's array (the array is single-owner — it lives in the owner's
   // profile). Returns 'added' | 'replaced' so the caller can report which.
   upsert(cwd: string, trigger: StoredTrigger): 'added' | 'replaced' {
-    const { profile, triggers } = this.readProfile(cwd)
-    const idx = triggers.findIndex(t => t.id === trigger.id)
-    let outcome: 'added' | 'replaced'
-    if (idx >= 0) {
-      triggers[idx] = trigger
-      outcome = 'replaced'
-    } else {
-      triggers.push(trigger)
-      outcome = 'added'
-    }
-    this.writeTriggers(cwd, triggers, profile)
+    let outcome: 'added' | 'replaced' = 'added'
+    this.patchProfile(cwd, profile => {
+      const triggers = this.triggersFrom(profile)
+      const idx = triggers.findIndex(t => t.id === trigger.id)
+      if (idx >= 0) {
+        triggers[idx] = trigger
+        outcome = 'replaced'
+      } else triggers.push(trigger)
+      this.writeTriggers(triggers, profile)
+    })
     return outcome
   }
 
   // Remove a trigger by id. Returns true if one was removed, false if no trigger
   // with that id existed (caller turns false into a teaching/info reply).
-  remove(cwd: string, id: string): boolean {
-    const { profile, triggers } = this.readProfile(cwd)
-    const next = triggers.filter(t => t.id !== id)
-    if (next.length === triggers.length) return false
-    this.writeTriggers(cwd, next, profile)
-    return true
+  remove(cwd: string, id: string, role?: StoredTrigger['role'], owner?: string): boolean {
+    let removed = false
+    this.patchProfile(cwd, profile => {
+      const triggers = this.triggersFrom(profile)
+      const next = triggers.filter(t => !(t.id === id && (!role || t.role === role) && (!owner || t.owner === owner)))
+      if (next.length === triggers.length) return
+      this.writeTriggers(next, profile)
+      removed = true
+    })
+    return removed
   }
 }

@@ -58,6 +58,15 @@ jobs:
         run: |
           ver="v$(node -p "require('./package.json').version")"
           [ "$TAG" = "$ver" ] || { echo "tag $TAG != package.json $ver" >&2; exit 1; }
+      - name: Release core dependency is an exact registry version
+        run: |
+          node --input-type=module -e '
+            import p from "./package.json" with {type:"json"};
+            const core = p.dependencies?.["@agfpd/iapeer"];
+            if (core && !/^\d+\.\d+\.\d+$/.test(core)) {
+              throw new Error("release requires exact registry @agfpd/iapeer, not a git/local/range dependency");
+            }
+          '
       - run: bun install --frozen-lockfile
       - run: bun run test
       - run: bun run typecheck
@@ -77,7 +86,7 @@ jobs:
           work="$(mktemp -d "$RUNNER_TEMP/notifier-proof.XXXXXX")"
           trap 'rm -r "$work"' EXIT
           tar -xzf "$ARCHIVE" -C "$work"
-          (cd "$work" && bun package/scripts/proof-maintenance.ts --receipt "$RUNNER_TEMP/notifier-maintenance.json")
+          (cd "$work/package" && bun install --production --ignore-scripts && bun scripts/proof-maintenance.ts --receipt "$RUNNER_TEMP/notifier-maintenance.json")
       - name: Publish exactly the checked archive
         if: ${{ !inputs.dry_run }}
         run: npm publish "$ARCHIVE" --access public --ignore-scripts

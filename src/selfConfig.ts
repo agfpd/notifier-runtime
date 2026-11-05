@@ -22,9 +22,8 @@
 // provisioned (especially `intelligence`=absent and `personality`) — it only sets the
 // rich `description`. Identity is the foundation's to provision; the hook must not clobber it.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
-import { randomUUID } from 'crypto'
-import { dirname, join } from 'path'
+import { patchPeerProfile } from '@agfpd/iapeer/peer-profile'
+import { join } from 'path'
 import { type Role } from './format.ts'
 import { resolvePersonality } from './identity.ts'
 import { PEER_BLURB } from './manifest.ts'
@@ -55,33 +54,23 @@ export function resolveRole(env: NodeJS.ProcessEnv, cwd: string): { role: Role; 
  * registry blurb (PEER_BLURB) into <cwd>/.iapeer/peer-profile.json `description`,
  * preserving every other field. That `description` is the field the foundation projects
  * (clamped to 450) into the shared registry, so it must be the blurb, not the multi-line
- * describeFormat doc. Atomic tmp+rename. Returns what was configured.
+ * describeFormat doc. Cooperative core transaction. Returns what was configured.
  */
 export function runSelfConfig(opts: SelfConfigOptions = {}): SelfConfigOutcome {
   const env = opts.env ?? process.env
   const cwd = opts.cwd ?? process.cwd()
-  const { role, personality } = resolveRole(env, cwd)
+  let role: Role = 'timer'
+  let personality = 'timer'
   const profilePath = join(cwd, '.iapeer', 'peer-profile.json')
 
-  let profile: Record<string, unknown> = {}
-  if (existsSync(profilePath)) {
-    try {
-      const raw = JSON.parse(readFileSync(profilePath, 'utf8'))
-      if (raw && typeof raw === 'object' && !Array.isArray(raw)) profile = raw as Record<string, unknown>
-    } catch {
-      // Malformed profile → write a clean one (nothing to preserve).
-    }
-  }
-
-  // Merge: set the ≤450 single-line registry blurb; PRESERVE everything else
-  // (intelligence, personality, and any foundation/unknown fields). Identity stays the
-  // foundation's domain. This is the field the foundation projects into the registry.
-  const merged: Record<string, unknown> = { ...profile, description: PEER_BLURB[role] }
-
-  mkdirSync(dirname(profilePath), { recursive: true, mode: 0o700 })
-  const tmp = `${profilePath}.${process.pid}.${randomUUID()}.tmp`
-  writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 })
-  renameSync(tmp, profilePath)
+  patchPeerProfile(cwd, profile => {
+    // Resolve from the same locked snapshot as the mutation. No identity read
+    // outside the transaction can supply an obsolete role for this patch.
+    personality = env.IAPEER_PEER_PERSONALITY?.trim() || env.PEER_PERSONALITY?.trim()
+      || (typeof profile.personality === 'string' ? profile.personality.trim() : '') || 'timer'
+    role = personality === 'watcher' ? 'watcher' : 'timer'
+    profile.description = PEER_BLURB[role]
+  })
 
   return { role, personality, profilePath }
 }
