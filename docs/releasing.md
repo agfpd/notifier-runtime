@@ -44,6 +44,16 @@ gh workflow run publish.yml -f tag=v0.6.3 -f sha256=ACCEPTED_SHA256 -F dry_run=t
 ```
 
 Use the same command with `-F dry_run=false` only when publication is approved.
+If `gh workflow run` returns HTTP 500 without creating a run, dispatch directly
+with a JSON boolean (verified with GitHub CLI 2.96.0):
+
+```sh
+gh api --method POST repos/agfpd/notifier-runtime/actions/workflows/publish.yml/dispatches \
+  --input - <<'JSON'
+{"ref":"main","inputs":{"tag":"v0.6.3","sha256":"ACCEPTED_SHA256","dry_run":true}}
+JSON
+```
+
 For mismatch testing, use dry-run and an intentionally wrong 64-digit hash:
 the gate must fail before native proof/publication. Do not test by publishing an
 unaccepted version. `dry_run` skips both publication and registry-integrity polling.
